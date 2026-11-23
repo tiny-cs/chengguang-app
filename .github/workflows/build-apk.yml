@@ -37,23 +37,28 @@ jobs:
         run: gradle assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk chengguang-debug.apk
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -n 1)
+          cp "$APK" "chengguang-${VERSION}.apk"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "APK_NAME=chengguang-${VERSION}.apk" >> $GITHUB_ENV
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chengguang-debug-apk
-          path: chengguang-debug.apk
+          name: chengguang-apk
+          path: chengguang-*.apk
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-${{ github.run_number }}
-          name: 城光 v1.0.0 (Build ${{ github.run_number }})
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
+          name: 城光 v${{ env.VERSION }} (Build ${{ github.run_number }})
           body: |
             城光 Android 原型（空壳版）。
             - 4 个栏目：属灵书籍、生命诗歌、讲道音频、讲道视频
             - 目录来自 app/src/main/assets/catalog.json，示例内容
             - 正式内容以后换成 Cloudflare R2 链接
-          files: chengguang-debug.apk
+          files: chengguang-*.apk
