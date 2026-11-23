@@ -12,6 +12,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// Sentry DSN 构建时注入，不写死在代码里：
+// 本地构建：gradle assembleDebug -PsentryDsn=https://...@o....ingest.us.sentry.io/...
+// GitHub Actions：工作流里加 -PsentryDsn=${{ secrets.SENTRY_DSN }}（见 README 的 Sentry 一节）。
+// 不传时 DSN 为空字符串，Sentry 不初始化，App 照常用。
+val sentryDsn: String = providers.gradleProperty("sentryDsn")
+    .orElse(providers.environmentVariable("SENTRY_DSN")).getOrElse("")
+
 android {
     namespace = "com.maihe.chengguang"
     compileSdk = 34
@@ -22,6 +29,10 @@ android {
         targetSdk = 34
         versionCode = 4
         versionName = "1.2.0"
+        // 注意：AGP 8.x 的 Kotlin DSL 里 buildConfigField 只能写在 defaultConfig /
+        // buildTypes / productFlavors 里，直接写在 android {} 下会报
+        // "Unresolved reference: buildConfigField"（脚本编译错误）。
+        buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
     }
 
     buildTypes {
@@ -40,14 +51,6 @@ android {
         compose = true
         buildConfig = true
     }
-
-    // Sentry DSN 构建时注入，不写死在代码里：
-    // 本地构建：gradle assembleDebug -PsentryDsn=https://...@o....ingest.us.sentry.io/...
-    // GitHub Actions：工作流里加 -PsentryDsn=${{ secrets.SENTRY_DSN }}（见 README 的 Sentry 一节）。
-    // 不传时 DSN 为空字符串，Sentry 不初始化，App 照常用。
-    val sentryDsn: String = providers.gradleProperty("sentryDsn")
-        .orElse(providers.environmentVariable("SENTRY_DSN")).getOrElse("")
-    buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
 
     sourceSets {
         getByName("main") {
