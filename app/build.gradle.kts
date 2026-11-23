@@ -41,17 +41,6 @@ android {
         }
     }
 
-    // APK 文件名带上版本号：chengguang-1.2.2.apk，而不是 app-debug.apk。
-    // 注意：改名后 app/build/outputs/apk/debug/ 里不再有 app-debug.apk，
-    // 工作流里原来那句 cp app-debug.apk 会失败，必须先把工作流改成
-    // 通配符/按版本号复制（见 .github/workflows/build-apk.yml），
-    // 再推这个改动，否则下一次推到 main 的构建会直接失败。
-    applicationVariants.all {
-        val variant = this
-        outputs.all {
-            outputFileName = "chengguang-${variant.versionName}.apk"
-        }
-    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
