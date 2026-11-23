@@ -15,7 +15,7 @@ import io.sentry.android.core.SentryAndroid
  * 在 GitHub 仓库加 Secret SENTRY_DSN，并在工作流里构建时传入 -PsentryDsn=$SENTRY_DSN。
  *
  * 只发报错堆栈，不发内容、链接、账号信息：
- * - beforeSend 里把请求信息、用户信息清掉，把消息和异常里的链接、UUID、文件路径替换掉；
+ * - beforeSend 里把消息和异常值里的链接、UUID、文件路径替换掉；不采集默认个人信息；
  * - 上报点只传标题和错误类型，从不传 item.url（R2 链接）和任何账号字段。
  */
 object ErrorReporting {
@@ -40,19 +40,15 @@ object ErrorReporting {
             SentryAndroid.init(context) { options ->
                 options.dsn = dsn
                 options.tracesSampleRate = 0.0 // 不采性能数据，只要报错
+                options.isSendDefaultPii = false
                 options.isEnableAutoSessionTracking = true
+                // 注意：Sentry 8.x 的 SentryEvent 上没有 request / user / throwable
+                // 这三个字段（7.x 有，8.x 删了），脱敏只处理实际存在的 message 和 exceptions。
                 options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
                     try {
-                        event.request = null
-                        event.user = null
                         event.message?.let { it.formatted = scrub(it.formatted) }
-                        event.throwable?.let { t ->
-                            // 异常消息里可能带链接/路径，只留脱敏后的第一行
-                            val clean = scrub(t.message ?: t.javaClass.simpleName)
-                            if (clean != null && clean != t.message) {
-                                // 不改原异常对象，只把事件消息换成脱敏版
-                                event.message = io.sentry.protocol.Message().apply { formatted = clean }
-                            }
+                        event.exceptions?.forEach { ex ->
+                            ex.value?.let { v -> ex.value = scrub(v) }
                         }
                     } catch (_: Exception) {
                         // 脱敏本身出错也别挡住上报
