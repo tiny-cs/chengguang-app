@@ -20,8 +20,8 @@ android {
         applicationId = "com.maihe.chengguang"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.2.0"
     }
 
     buildTypes {
@@ -38,7 +38,16 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
+
+    // Sentry DSN 构建时注入，不写死在代码里：
+    // 本地构建：gradle assembleDebug -PsentryDsn=https://...@o....ingest.us.sentry.io/...
+    // GitHub Actions：工作流里加 -PsentryDsn=${{ secrets.SENTRY_DSN }}（见 README 的 Sentry 一节）。
+    // 不传时 DSN 为空字符串，Sentry 不初始化，App 照常用。
+    val sentryDsn: String = providers.gradleProperty("sentryDsn")
+        .orElse(providers.environmentVariable("SENTRY_DSN")).getOrElse("")
+    buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
 
     sourceSets {
         getByName("main") {
@@ -69,6 +78,9 @@ dependencies {
     // 必须加 extended，否则 Icons.Default.Pause 编译报错
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.2")
+    // 报错收集 Sentry（组织 maihe，项目 chengguang-android 待建）：
+    // 只发报错堆栈，beforeSend 里脱敏（见 ErrorReporting.kt）；DSN 为空时不初始化。
+    implementation("io.sentry:sentry-android:8.65.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

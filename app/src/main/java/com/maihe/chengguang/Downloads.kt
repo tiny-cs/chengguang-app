@@ -199,6 +199,7 @@ class DownloadStore(context: Context) {
             refresh()
             StartResult.Started
         } catch (e: Exception) {
+            reportError("download", e)
             StartResult.Failed(e.message ?: "下载启动失败")
         }
     }

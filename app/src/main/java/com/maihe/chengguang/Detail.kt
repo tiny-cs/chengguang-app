@@ -197,8 +197,9 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
                 status = if (downloads.isDownloaded(item)) "已就绪（离线播放）" else "已就绪"
             }
             player.setOnErrorListener { _, _, _ ->
-                status = "加载失败，请检查网络（示例音频）"
+                status = "加载失败，请检查网络"
                 isPlaying = false
+                reportMessage("audio-playback", item.title)
                 true
             }
             player.setOnCompletionListener {
@@ -208,7 +209,8 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
             }
             player.prepareAsync()
         } catch (_: Exception) {
-            status = "加载失败，请检查网络（示例音频）"
+            status = "加载失败，请检查网络"
+            reportMessage("audio-playback", item.title)
         }
     }
 
@@ -311,7 +313,7 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
         Spacer(modifier = Modifier.height(16.dp))
         Text(status, fontSize = 13.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))
-        Text("示例音频：正式内容将替换为 R2 链接", fontSize = 12.sp, color = Color.Gray)
+        Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(20.dp))
         DownloadSection(item, downloads)
         Spacer(modifier = Modifier.height(16.dp))
@@ -333,7 +335,10 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
                     controller.setAnchorView(this)
                     setMediaController(controller)
                     setOnPreparedListener { it.start() }
-                    setOnErrorListener { _, _, _ -> true }
+                    setOnErrorListener { _, _, _ ->
+                        reportMessage("video-playback", item.title)
+                        true
+                    }
                 }
             },
             update = { view ->
@@ -363,7 +368,7 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
                 Text(item.description, fontSize = 15.sp, color = Color.DarkGray)
             }
             Spacer(modifier = Modifier.height(12.dp))
-            Text("示例视频：正式内容将替换为 R2 链接", fontSize = 12.sp, color = Color.Gray)
+            Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
             Spacer(modifier = Modifier.height(20.dp))
             DownloadSection(item, downloads)
             Spacer(modifier = Modifier.height(16.dp))

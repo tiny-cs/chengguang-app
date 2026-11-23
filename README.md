@@ -63,10 +63,39 @@ gradle assembleDebug
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`
 
-## 以后接 R2 的计划（暂不做）
+## 管理后台（v1.2.0 起）
 
-1. 管理员把音视频文件传到 Cloudflare R2 桶
-2. 在 R2 旁放一份同结构的 `catalog.json`，或用 Worker + D1 提供目录接口
-3. App 把本地 `catalog.json` 的读取地址改成 R2 公开链接，其余不动
+内容不再只靠 App 内置目录。管理后台是一个 Cloudflare Worker + R2 桶，代码在 `admin/`：
 
-<!-- 重新触发构建：首个 Actions 运行失败（Build debug APK 步骤 exit 1），原因待查 -->
+- `admin/src/index.js`：Worker 全部代码（管理页 + 接口 + 文件代理），单文件。
+- `admin/wrangler.toml`：Worker 名 `chengguang-admin`，绑定 R2 桶 `chengguang`。
+- `admin/DEPLOY.md`：部署步骤（中文）。**R2 开通需要在 Cloudflare 账号里放一张卡或 PayPal**
+  （免费额度内不扣费）；Workers 免费版不用绑卡。部署前请先读它。
+- `admin/README.md`：接口和设计说明。
+
+App 启动时先显示内置目录，再从 `Catalog.kt` 里的 `REMOTE_CATALOG_URL`
+（`<Worker 地址>/catalog.json`）拉远程目录；拉不到就继续用内置的，不会白屏。
+`REMOTE_CATALOG_URL` 现在是空字符串（后台还没部署），部署好 Worker 后填上、重新打包即可。
+
+管理页功能：密码登录、上传（音频/视频传文件，书籍/诗歌填正文）、改标题/简介/栏目、
+删除（目录 + R2 文件一起删）、看存储占用。以后“指定人上传、管理员审核”不用重做：
+记录里已有 `status` / `uploadedBy` 字段，上传的人写 `pending`、管理员通过改 `published` 即可。
+
+## 报错收集 Sentry（v1.2.0 起，待启用）
+
+- 组织：`maihe`（和麦禾 VPN Windows 版同一个 Sentry 账号，https://maihe.sentry.io，美国区，
+  免费 Developer 套餐，每月 5000 条，不用绑卡），账号 zxq4455@outlook.com。
+- **项目 `chengguang-android` 还没建**——建项目要登录 sentry.io（浏览器操作），
+  本版只把接 Sentry 的代码和构建注入做好了，DSN 为空时 Sentry 不初始化，App 照常用。
+  建好项目后：① 在 Sentry 里新建项目 `chengguang-android`（平台 Android），拿到 DSN；
+  ② 在 GitHub 仓库 `tiny-cs/chengguang-app` 加 Secret `SENTRY_DSN`；
+  ③ 工作流 `.github/workflows/build-apk.yml` 的构建命令改成
+  `gradle assembleDebug -PsentryDsn=${{ secrets.SENTRY_DSN }}`（工作流文件只能在网页上改，
+  API 推不上去）；④ 重新推一次代码触发构建。
+- 收集范围：App 闪退（SDK 自动）、音频/视频播放失败、下载启动失败、远程目录拉取失败。
+- 脱敏（`ErrorReporting.kt` 的 `beforeSend`）：只发报错堆栈，不发内容、链接、UUID、账号信息；
+  请求信息和用户信息清掉，消息里的链接、UUID、文件路径替换成占位符。
+  DSN 是客户端标识（Sentry 设计如此，可进公开仓库），但本项目仍按构建时注入处理，不写死在代码里。
+- 验证：装好带 DSN 的新版后，故意断网打开一条远程音频（或在 Sentry 里看有没有收到
+  `[catalog]` / `[audio-playback]` 的事件），Sentry 项目的 Issues 里出现对应条目即接通。
+  注意：本版（DSN 为空）装上后 Sentry 里**不会**有任何事件，这是正常的——先建项目、配好 DSN 再验证。

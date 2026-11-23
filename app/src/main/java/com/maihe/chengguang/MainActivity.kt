@@ -44,6 +44,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +57,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val Navy = Color(0xFF1F2A44)
 private val Gold = Color(0xFF9A7B2D)
@@ -102,7 +105,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ChengguangApp() {
     val context = LocalContext.current
-    val items = remember { loadCatalog(context) }
+    // 先显示内置目录，再在后台拉远程目录；拉不到（没网、后台没部署）就继续用内置的。
+    var items by remember { mutableStateOf(loadCatalog(context)) }
+    LaunchedEffect(Unit) {
+        val remote = withContext(Dispatchers.IO) { fetchRemoteCatalog() }
+        if (remote != null && remote.isNotEmpty()) items = remote
+    }
     val downloads = remember { DownloadStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
     val current = stack.last()
@@ -472,7 +480,7 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("城光是属灵内容 App：属灵书籍、生命诗歌、讲道音频、讲道视频。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("版本：1.1.0（离线下载版）", fontSize = 13.sp, color = Color.Gray)
+                    Text("版本：1.2.0（管理后台 + 报错收集版）", fontSize = 13.sp, color = Color.Gray)
                 }
             }
         }
@@ -481,7 +489,7 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("存储说明", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("视频和音频以后存放在 Cloudflare R2 对象存储，App 里只存标题和播放链接。本原型用本地 catalog.json 做目录，示例音视频为公开示例文件。下载的文件存在 App 专属目录，随 App 卸载一起删除。", fontSize = 14.sp)
+                    Text("视频和音频存放在 Cloudflare R2 对象存储，App 打开时从管理后台拉最新目录；拉不到时用 App 内置的目录，不会白屏。下载的文件存在 App 专属目录，随 App 卸载一起删除。", fontSize = 14.sp)
                 }
             }
         }

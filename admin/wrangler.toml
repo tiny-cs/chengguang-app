@@ -1,0 +1,14 @@
+# 城光管理后台 — Cloudflare Worker
+name = "chengguang-admin"
+main = "src/index.js"
+compatibility_date = "2026-11-23"
+
+# R2 桶：先在 Cloudflare 后台建好同名桶 chengguang（见 DEPLOY.md）。
+# Worker 免费版不需要绑卡；R2 开通需要在账号里放一张卡或 PayPal（免费额度内不扣费）。
+[[r2_buckets]]
+binding = "CHENGGUANG_BUCKET"
+bucket_name = "chengguang"
+
+# 管理员密码不要写在这里！用 Secret 设置：
+#   npx wrangler secret put ADMIN_PASSWORD
+# 或在 Dashboard → Workers → chengguang-admin → Settings → Variables 里添加。

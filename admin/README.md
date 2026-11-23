@@ -1,0 +1,59 @@
+# 城光管理后台 · 设计说明
+
+## 结构
+
+```
+admin/
+  src/index.js      Worker 全部代码（单文件：接口 + 管理页 HTML）
+  wrangler.toml     Worker 配置：名字 chengguang-admin，绑定 R2 桶 chengguang
+  DEPLOY.md         部署步骤（中文，含 R2 绑卡说明和备选 B2）
+  README.md         本文件
+```
+
+一个 Worker 干三件事：① 托管管理页（`/`）；② 给 App 提供目录（`/catalog.json`）和文件播放（`/file/...`）；
+③ 管理接口（`/api/*`，要登录）。
+
+## 数据放哪里
+
+- **文件**：R2 桶 `chengguang`，`media/<id>.<扩展名>`。桶保持私有，不开公开访问。
+- **目录**：同一桶里的 `catalog.json`，结构和 App 内置 `catalog.json` 完全一样，
+  每条多三个字段：`status`（published / pending）、`uploadedBy`、`createdAt`。
+  App 读的时候只认 published 的；Worker 返回 `/catalog.json` 时也只给 published 的。
+- **密码**：Worker Secret `ADMIN_PASSWORD`，不在代码、不在仓库里。
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/` | 管理页（中文） |
+| GET | `/catalog.json` | App 拉目录（公开，只含 published） |
+| GET | `/file/media/<id>.<ext>` | 播放 / 下载文件（公开走 Worker 代理，支持断点续传 Range） |
+| POST | `/api/login` | `{password}` → 写 HttpOnly Cookie `cg_admin`（30 天） |
+| POST | `/api/logout` | 清 Cookie |
+| GET | `/api/me` | 是否已登录 |
+| GET | `/api/items` | 全部目录 + 存储占用（要登录） |
+| POST | `/api/upload` | multipart：标题、栏目、简介、时长、正文、文件（要登录） |
+| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文（要登录） |
+| DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（要登录） |
+
+## 上传规则
+
+- 书籍 / 诗歌：填正文即可，文件可选（PDF 等附件）。
+- 音频 / 视频：必须传文件；只收 mp3/m4a/wav/ogg/aac/flac 和 mp4/mov/webm/mkv/m4v。
+- 单个文件不超过 100MB（Workers 免费版单次请求体上限）。更大的文件先压缩或剪短再传。
+- 上传后立即进目录，App 下次打开就能看到，不用重新打包 App。
+
+## 以后加“指定人上传、管理员审核”
+
+不用重做：记录里已有 `status` 和 `uploadedBy` 字段。到时：
+
+1. 上传接口按上传者身份写 `status: "pending"`（现在管理员上传直接写 `published`）；
+2. 管理页加一栏“待审核”，管理员点“通过”把 `status` 改成 `published`，点“不通过”删除；
+3. App 和 `/catalog.json` 本来就只返回 published，不用改。
+
+## 安全说明
+
+- 管理接口只认 Cookie（HttpOnly，30 天），密码本身不经过前端存储。
+- 文件播放走 Worker 代理，不暴露 R2 的公开地址和桶名以外的信息。
+- 上传只按扩展名白名单收文件，文件名不直接用用户传的文件名（用 `media/<id>.<ext>`）。
+- 目录 JSON 里的 `url` 是 Worker 代理地址，不是 R2 直链。
