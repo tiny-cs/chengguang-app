@@ -32,6 +32,16 @@ App 启动时读 `app/src/main/assets/catalog.json`，不把内容写死在 Kotl
 音频/视频链接是公开示例文件（SoundHelix / Google 示例视频），仅用于验证播放器，
 正式发布前必须替换为自己的 R2 链接。
 
+## 离线下载（v1.1.0 新增）
+
+- 音频/视频详情页有“下载到手机”：用系统 DownloadManager 下载，带进度条、取消；
+  下载完显示“已下载，可离线播放”，播放自动走本地文件。
+- “我的”页有已下载列表（个数、总大小）、逐条删除、“仅在 WiFi 下下载”开关（默认开）。
+- 下载文件放在 App 专属目录（`getExternalFilesDir(DOWNLOADS)`），不需要申请存储权限，
+  随 App 卸载一起删除。书籍/诗歌正文已在 `catalog.json` 里随 App 自带，本来就能离线读，
+  不做下载按钮。
+- 只做下载，不做用户上传。
+
 ## 构建
 
 推到 GitHub 后由 Actions 自动编译 debug APK 并发布到 Releases，

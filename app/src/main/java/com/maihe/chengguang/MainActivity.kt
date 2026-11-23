@@ -35,8 +35,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -101,6 +103,7 @@ class MainActivity : ComponentActivity() {
 fun ChengguangApp() {
     val context = LocalContext.current
     val items = remember { loadCatalog(context) }
+    val downloads = remember { DownloadStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
     val current = stack.last()
 
@@ -177,13 +180,13 @@ fun ChengguangApp() {
                 .background(Paper)
         ) {
             when (val r = current) {
-                Route.Home -> HomeScreen(items, onCategory = { go(Route.Category(it)) }, onItem = { go(Route.Detail(it.id)) })
-                Route.All -> AllScreen(items, onItem = { go(Route.Detail(it.id)) })
-                Route.Mine -> MineScreen()
-                is Route.Category -> CategoryScreen(r.name, items, onItem = { go(Route.Detail(it.id)) })
+                Route.Home -> HomeScreen(items, downloads, onCategory = { go(Route.Category(it)) }, onItem = { go(Route.Detail(it.id)) })
+                Route.All -> AllScreen(items, downloads, onItem = { go(Route.Detail(it.id)) })
+                Route.Mine -> MineScreen(items, downloads, onItem = { go(Route.Detail(it.id)) })
+                is Route.Category -> CategoryScreen(r.name, items, downloads, onItem = { go(Route.Detail(it.id)) })
                 is Route.Detail -> {
                     val item = items.find { it.id == r.id }
-                    if (item != null) DetailScreen(item) else Text("内容不存在", modifier = Modifier.padding(16.dp))
+                    if (item != null) DetailScreen(item, downloads) else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
             }
         }
@@ -193,6 +196,7 @@ fun ChengguangApp() {
 @Composable
 fun HomeScreen(
     items: List<CatalogItem>,
+    downloads: DownloadStore,
     onCategory: (String) -> Unit,
     onItem: (CatalogItem) -> Unit
 ) {
@@ -237,7 +241,7 @@ fun HomeScreen(
                 Text("今日推荐", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
             }
             val featured = CATEGORIES.mapNotNull { name -> items.firstOrNull { it.category == name } }
-            items(featured) { item -> ItemRow(item, onClick = { onItem(item) }) }
+            items(featured) { item -> ItemRow(item, downloads, onClick = { onItem(item) }) }
         } else {
             val results = items.filter {
                 it.title.contains(query) || it.description.contains(query)
@@ -246,7 +250,7 @@ fun HomeScreen(
             if (results.isEmpty()) {
                 item { Text("没有找到相关内容，换个关键词试试。", modifier = Modifier.padding(top = 8.dp)) }
             }
-            items(results) { item -> ItemRow(item, onClick = { onItem(item) }) }
+            items(results) { item -> ItemRow(item, downloads, onClick = { onItem(item) }) }
         }
         if (items.isEmpty()) {
             item { Text("目录为空：请检查 catalog.json。", modifier = Modifier.padding(top = 8.dp)) }
@@ -295,7 +299,7 @@ fun CategoryCard(name: String, count: Int, modifier: Modifier = Modifier, onClic
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AllScreen(items: List<CatalogItem>, onItem: (CatalogItem) -> Unit) {
+fun AllScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (CatalogItem) -> Unit) {
     var selected by remember { mutableStateOf("全部") }
     val shown = if (selected == "全部") items else items.filter { it.category == selected }
     LazyColumn(
@@ -319,7 +323,7 @@ fun AllScreen(items: List<CatalogItem>, onItem: (CatalogItem) -> Unit) {
                 }
             }
         }
-        items(shown) { item -> ItemRow(item, onClick = { onItem(item) }) }
+        items(shown) { item -> ItemRow(item, downloads, onClick = { onItem(item) }) }
         if (shown.isEmpty()) {
             item { Text("这个栏目还没有内容。", modifier = Modifier.padding(top = 8.dp)) }
         }
@@ -327,14 +331,14 @@ fun AllScreen(items: List<CatalogItem>, onItem: (CatalogItem) -> Unit) {
 }
 
 @Composable
-fun CategoryScreen(name: String, items: List<CatalogItem>, onItem: (CatalogItem) -> Unit) {
+fun CategoryScreen(name: String, items: List<CatalogItem>, downloads: DownloadStore, onItem: (CatalogItem) -> Unit) {
     val shown = items.filter { it.category == name }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        items(shown) { item -> ItemRow(item, onClick = { onItem(item) }) }
+        items(shown) { item -> ItemRow(item, downloads, onClick = { onItem(item) }) }
         if (shown.isEmpty()) {
             item { Text("这个栏目还没有内容。", modifier = Modifier.padding(top = 8.dp)) }
         }
@@ -342,7 +346,7 @@ fun CategoryScreen(name: String, items: List<CatalogItem>, onItem: (CatalogItem)
 }
 
 @Composable
-fun ItemRow(item: CatalogItem, onClick: () -> Unit) {
+fun ItemRow(item: CatalogItem, downloads: DownloadStore, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -370,6 +374,7 @@ fun ItemRow(item: CatalogItem, onClick: () -> Unit) {
                     append(item.category)
                     if (item.duration.isNotEmpty()) append(" · ${item.duration}")
                     if (item.size.isNotEmpty()) append(" · ${item.size}")
+                    if (downloads.isDownloaded(item)) append(" · 已下载")
                 }
                 Text(meta, fontSize = 13.sp, color = Color.Gray)
                 if (item.description.isNotEmpty()) {
@@ -382,7 +387,9 @@ fun ItemRow(item: CatalogItem, onClick: () -> Unit) {
 }
 
 @Composable
-fun MineScreen() {
+fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (CatalogItem) -> Unit) {
+    val downloaded = downloads.downloadedItems(items)
+    val totalBytes = downloads.totalDownloadedBytes(items)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -407,11 +414,65 @@ fun MineScreen() {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    Text("已下载（${downloaded.size} 个 · 共 ${formatBytes(totalBytes)}）", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("已下载的音频和视频断网也能播放。点一条打开播放，删掉可释放手机空间。书籍和诗歌正文已随 App 自带，离线也能读，无需下载。", fontSize = 14.sp)
+                }
+            }
+        }
+        if (downloaded.isEmpty()) {
+            item {
+                Text("还没有下载的内容。在音频 / 视频详情页点“下载到手机”即可离线收听。", fontSize = 14.sp, color = Color.Gray)
+            }
+        } else {
+            items(downloaded) { item ->
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).clickable { onItem(item) }) {
+                            Text(item.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                "${item.category} · ${formatBytes(downloads.localFile(item).length())}",
+                                fontSize = 13.sp, color = Color.Gray
+                            )
+                        }
+                        OutlinedButton(onClick = { downloads.delete(item) }) { Text("删除") }
+                    }
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("仅在 WiFi 下下载", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("打开后，用流量时点下载会提示连 WiFi 再试", fontSize = 13.sp, color = Color.Gray)
+                    }
+                    Switch(
+                        checked = downloads.wifiOnly,
+                        onCheckedChange = { downloads.wifiOnly = it }
+                    )
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("城光是属灵内容 App：属灵书籍、生命诗歌、讲道音频、讲道视频。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("版本：1.0.0（原型空壳版）", fontSize = 13.sp, color = Color.Gray)
+                    Text("版本：1.1.0（离线下载版）", fontSize = 13.sp, color = Color.Gray)
                 }
             }
         }
@@ -420,7 +481,7 @@ fun MineScreen() {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("存储说明", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("视频和音频以后存放在 Cloudflare R2 对象存储，App 里只存标题和播放链接。本原型用本地 catalog.json 做目录，示例音视频为公开示例文件。", fontSize = 14.sp)
+                    Text("视频和音频以后存放在 Cloudflare R2 对象存储，App 里只存标题和播放链接。本原型用本地 catalog.json 做目录，示例音视频为公开示例文件。下载的文件存在 App 专属目录，随 App 卸载一起删除。", fontSize = 14.sp)
                 }
             }
         }

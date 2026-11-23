@@ -22,9 +22,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,10 +50,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 
 @Composable
-fun DetailScreen(item: CatalogItem) {
+fun DetailScreen(item: CatalogItem, downloads: DownloadStore) {
     when (item.type) {
-        "audio" -> AudioDetail(item)
-        "video" -> VideoDetail(item)
+        "audio" -> AudioDetail(item, downloads)
+        "video" -> VideoDetail(item, downloads)
         else -> ReadingDetail(item)
     }
 }
@@ -80,6 +85,10 @@ fun ReadingDetail(item: CatalogItem) {
                 Spacer(modifier = Modifier.height(10.dp))
             }
         }
+        Spacer(modifier = Modifier.height(16.dp))
+        Divider()
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("正文已随 App 自带，离线也能读，无需下载。", fontSize = 12.sp, color = Color.Gray)
     }
 }
 
@@ -88,20 +97,104 @@ private fun formatMs(ms: Int): String {
     return "%d:%02d".format(total / 60, total % 60)
 }
 
+/** 音频/视频详情页共用的下载区：下载按钮 + 进度 + 取消 / 已下载 + 删除。 */
 @Composable
-fun AudioDetail(item: CatalogItem) {
+fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
+    val state = downloads.state(item)
+    var hint by remember { mutableStateOf("") }
+
+    // 下载进行中时每 0.5 秒刷新一次进度
+    LaunchedEffect(state.status) {
+        while (state.status == DownloadStatus.DOWNLOADING || state.status == DownloadStatus.PAUSED) {
+            delay(500)
+            downloads.refresh()
+        }
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("离线下载", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            when (state.status) {
+                DownloadStatus.NOT_DOWNLOADED -> {
+                    if (item.size.isNotEmpty()) Text("文件约 ${item.size}", fontSize = 13.sp, color = Color.Gray)
+                    if (downloads.wifiOnly) Text("仅在 WiFi 下下载（可在“我的”里改）", fontSize = 13.sp, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(onClick = {
+                        when (val r = downloads.start(item)) {
+                            DownloadStore.StartResult.Started -> hint = ""
+                            DownloadStore.StartResult.NeedWifi -> hint = "已设为仅 WiFi 下载，请连接 WiFi 后再试"
+                            is DownloadStore.StartResult.Failed -> hint = "下载失败：${r.message}"
+                        }
+                    }) { Text("下载到手机") }
+                }
+                DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED -> {
+                    val percent = (state.progress * 100).toInt()
+                    Text(
+                        if (state.status == DownloadStatus.PAUSED) "已暂停 $percent%"
+                        else "正在下载 $percent%",
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth())
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        if (state.totalBytes > 0) "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}"
+                        else "已下载 ${formatBytes(state.downloadedBytes)}",
+                        fontSize = 13.sp, color = Color.Gray
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(onClick = { downloads.cancel(item) }) { Text("取消下载") }
+                }
+                DownloadStatus.DOWNLOADED -> {
+                    Text("✓ 已下载，可离线播放", fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(onClick = { downloads.delete(item) }) { Text("删除下载") }
+                }
+                DownloadStatus.FAILED -> {
+                    Text("下载失败，请检查网络后重试", fontSize = 14.sp, color = Color(0xFF8E4A2F))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(onClick = {
+                        when (val r = downloads.start(item)) {
+                            DownloadStore.StartResult.Started -> hint = ""
+                            DownloadStore.StartResult.NeedWifi -> hint = "已设为仅 WiFi 下载，请连接 WiFi 后再试"
+                            is DownloadStore.StartResult.Failed -> hint = "下载失败：${r.message}"
+                        }
+                    }) { Text("重新下载") }
+                }
+            }
+            if (hint.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(hint, fontSize = 13.sp, color = Color(0xFF8E4A2F))
+            }
+        }
+    }
+}
+
+@Composable
+fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
     val player = remember { MediaPlayer() }
     var status by remember { mutableStateOf("准备中…") }
     var isPlaying by remember { mutableStateOf(false) }
     var durationMs by remember { mutableIntStateOf(0) }
     var positionMs by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(item.url) {
+    // 播放地址：已下载用本地文件，否则用远程链接。下载完成时地址会变，
+    // 重新准备播放器，下次播放就走离线文件。
+    val source = downloads.playSource(item)
+
+    LaunchedEffect(source) {
+        isPlaying = false
+        positionMs = 0
         try {
-            player.setDataSource(item.url)
+            player.reset()
+            player.setDataSource(source)
             player.setOnPreparedListener {
                 durationMs = it.duration
-                status = "已就绪"
+                status = if (downloads.isDownloaded(item)) "已就绪（离线播放）" else "已就绪"
             }
             player.setOnErrorListener { _, _, _ ->
                 status = "加载失败，请检查网络（示例音频）"
@@ -165,7 +258,7 @@ fun AudioDetail(item: CatalogItem) {
         Spacer(modifier = Modifier.height(28.dp))
         IconButton(
             onClick = {
-                if (status == "已就绪" || status == "已播完" || isPlaying) {
+                if (status == "已就绪" || status == "已就绪（离线播放）" || status == "已播完" || isPlaying) {
                     if (isPlaying) {
                         player.pause()
                         isPlaying = false
@@ -219,11 +312,15 @@ fun AudioDetail(item: CatalogItem) {
         Text(status, fontSize = 13.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))
         Text("示例音频：正式内容将替换为 R2 链接", fontSize = 12.sp, color = Color.Gray)
+        Spacer(modifier = Modifier.height(20.dp))
+        DownloadSection(item, downloads)
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
 @Composable
-fun VideoDetail(item: CatalogItem) {
+fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
+    val uri = downloads.playUri(item)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -232,12 +329,18 @@ fun VideoDetail(item: CatalogItem) {
         AndroidView(
             factory = { ctx ->
                 VideoView(ctx).apply {
-                    setVideoURI(Uri.parse(item.url))
                     val controller = MediaController(ctx)
                     controller.setAnchorView(this)
                     setMediaController(controller)
                     setOnPreparedListener { it.start() }
                     setOnErrorListener { _, _, _ -> true }
+                }
+            },
+            update = { view ->
+                // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
+                if (view.tag != uri.toString()) {
+                    view.tag = uri.toString()
+                    view.setVideoURI(uri)
                 }
             },
             modifier = Modifier
@@ -252,6 +355,7 @@ fun VideoDetail(item: CatalogItem) {
                 append(item.category)
                 if (item.duration.isNotEmpty()) append(" · ${item.duration}")
                 if (item.size.isNotEmpty()) append(" · ${item.size}")
+                if (downloads.isDownloaded(item)) append(" · 已下载")
             }
             Text(meta, fontSize = 13.sp, color = Color.Gray)
             if (item.description.isNotEmpty()) {
@@ -260,6 +364,9 @@ fun VideoDetail(item: CatalogItem) {
             }
             Spacer(modifier = Modifier.height(12.dp))
             Text("示例视频：正式内容将替换为 R2 链接", fontSize = 12.sp, color = Color.Gray)
+            Spacer(modifier = Modifier.height(20.dp))
+            DownloadSection(item, downloads)
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }

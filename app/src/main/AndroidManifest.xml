@@ -3,6 +3,8 @@
 
     <!-- 播放示例音频/视频需要联网；正式版走 R2 链接同样需要此权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- “仅 WiFi 下载”开关要判断当前是不是 WiFi -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="true"
