@@ -373,12 +373,12 @@ async function load() {
     var it = items[i];
     html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span></td>"
       + "<td>" + esc(it.category) + "</td><td>" + esc(it.size || "-") + "</td>"
-      + "<td><button onclick='editItem(\"" + it.id + "\")'>编辑</button> "
-      + "<button class='danger' onclick='delItem(\"" + it.id + "\",\"" + esc(it.title) + "\")'>删除</button></td></tr>";
+      + "<td><button data-id='" + it.id + "' onclick='editItem(this.dataset.id)'>编辑</button> "
+      + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>删除</button></td></tr>";
   }
   document.getElementById("list").innerHTML = html || "<tr><td colspan='4'>还没有内容，先上传一条试试。</td></tr>";
 }
-function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function resetForm() {
   document.getElementById("editId").value = "";
   document.getElementById("formTitle").textContent = "上传新内容";
