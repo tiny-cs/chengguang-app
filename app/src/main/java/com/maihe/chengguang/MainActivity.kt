@@ -480,7 +480,7 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("城光是属灵内容 App：属灵书籍、生命诗歌、讲道音频、讲道视频。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("版本：1.2.0（管理后台 + 报错收集版）", fontSize = 13.sp, color = Color.Gray)
+                    Text("版本：1.2.1（远程目录版）", fontSize = 13.sp, color = Color.Gray)
                 }
             }
         }

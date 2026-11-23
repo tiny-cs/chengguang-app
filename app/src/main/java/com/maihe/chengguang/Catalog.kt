@@ -35,7 +35,7 @@ val CATEGORIES = listOf("属灵书籍", "生命诗歌", "讲道音频", "讲道�
  *   https://chengguang-admin.<你的子域名>.workers.dev/catalog.json
  * 为空表示后台还没部署，App 只用内置目录。不要把这个地址写成猜出来的子域名。
  */
-const val REMOTE_CATALOG_URL = ""
+const val REMOTE_CATALOG_URL = "https://chengguang-admin.zxq4455.workers.dev/catalog.json"
 
 fun typeChar(type: String): String = when (type) {
     "book" -> "书"
