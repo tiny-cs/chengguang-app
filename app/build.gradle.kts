@@ -1,3 +1,10 @@
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.util.Base64
+import javax.imageio.ImageIO
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +20,8 @@ android {
         applicationId = "com.maihe.chengguang"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
     }
 
     buildTypes {
@@ -31,6 +38,13 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+
+    sourceSets {
+        getByName("main") {
+            // 启动图标 PNG 由 decodeLauncherIcons 任务在构建时生成到这里
+            res.srcDirs("build/generated/icons/res")
+        }
     }
     packaging {
         resources {
@@ -59,3 +73,66 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// 启动图标：仓库里只存两张 512px 原图的 base64 文本（push_files 不接受二进制文件），
+// 构建时由本任务解码并生成各密度的 mipmap / 自适应图标前景 PNG。
+// 白底版是用户选定的图标（chengguang-icon-2048-white.png）；
+// 自适应前景用透明底版，圆形控制在 66dp 安全区内，白底由 @color/chengguang_white 提供，
+// 这样圆形在任何形状的启动器遮罩下都不会被裁切。
+val decodeLauncherIcons by tasks.registering {
+    val iconSources = file("icon-sources")
+    val outRes = layout.buildDirectory.dir("generated/icons/res")
+    inputs.files(
+        iconSources.resolve("icon-white-512.b64"),
+        iconSources.resolve("icon-transparent-512.b64")
+    )
+    outputs.dir(outRes)
+    doLast {
+        fun decode(name: String): BufferedImage {
+            val bytes = Base64.getDecoder().decode(iconSources.resolve(name).readText().trim())
+            return ImageIO.read(ByteArrayInputStream(bytes)) ?: error("无法解码 $name")
+        }
+        fun scale(src: BufferedImage, w: Int, h: Int): BufferedImage {
+            val out = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+            val g = out.createGraphics()
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g.drawImage(src, 0, 0, w, h, null)
+            g.dispose()
+            return out
+        }
+        val white = decode("icon-white-512.b64")
+        val transparent = decode("icon-transparent-512.b64")
+        val outDir = outRes.get().asFile
+        // 传统 mipmap：用用户选定的白底整图
+        mapOf(
+            "mipmap-mdpi" to 48,
+            "mipmap-hdpi" to 72,
+            "mipmap-xhdpi" to 96,
+            "mipmap-xxhdpi" to 144,
+            "mipmap-xxxhdpi" to 192
+        ).forEach { (dir, size) ->
+            val d = File(outDir, dir).apply { mkdirs() }
+            ImageIO.write(scale(white, size, size), "png", File(d, "ic_launcher.png"))
+            ImageIO.write(scale(white, size, size), "png", File(d, "ic_launcher_round.png"))
+        }
+        // 自适应前景：透明底圆形缩放到 66dp 安全区，居中放在 108dp 画布上
+        mapOf(
+            "drawable-mdpi" to 108,
+            "drawable-hdpi" to 162,
+            "drawable-xhdpi" to 216,
+            "drawable-xxhdpi" to 324,
+            "drawable-xxxhdpi" to 432
+        ).forEach { (dir, canvas) ->
+            val logoSize = canvas * 66 / 108
+            val d = File(outDir, dir).apply { mkdirs() }
+            val out = BufferedImage(canvas, canvas, BufferedImage.TYPE_INT_ARGB)
+            val g = out.createGraphics()
+            g.drawImage(scale(transparent, logoSize, logoSize), (canvas - logoSize) / 2, (canvas - logoSize) / 2, null)
+            g.dispose()
+            ImageIO.write(out, "png", File(d, "ic_launcher_foreground.png"))
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(decodeLauncherIcons) }

@@ -32,6 +32,14 @@ App 启动时读 `app/src/main/assets/catalog.json`，不把内容写死在 Kotl
 音频/视频链接是公开示例文件（SoundHelix / Google 示例视频），仅用于验证播放器，
 正式发布前必须替换为自己的 R2 链接。
 
+## 启动图标（v1.1.1 起）
+
+用户选定的白底圆形城光标（`chengguang-icon-2048-white.png`）。仓库里只存两张 512px
+原图的 base64 文本（`app/icon-sources/*.b64`，因为 push 不接受二进制文件），构建时
+`decodeLauncherIcons` 任务解码并生成各密度 mipmap 和自适应图标前景：传统图标用白底整图，
+自适应前景用透明底版、圆形控制在 66dp 安全区内、白底为 `@color/chengguang_white`，
+在任何形状的启动器遮罩下都不会被裁切。
+
 ## 离线下载（v1.1.0 新增）
 
 - 音频/视频详情页有“下载到手机”：用系统 DownloadManager 下载，带进度条、取消；
