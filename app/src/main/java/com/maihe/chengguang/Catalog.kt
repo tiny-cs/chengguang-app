@@ -28,7 +28,7 @@ data class CatalogItem(
     val createdAt: String = ""
 )
 
-val CATEGORIES = listOf("属灵书籍", "生命诗歌", "讲道音频", "讲道视频")
+val CATEGORIES = listOf("属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息")
 
 /**
  * 管理后台的目录地址。部署好 Worker 后把这里填成：

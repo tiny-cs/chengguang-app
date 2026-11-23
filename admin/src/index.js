@@ -6,8 +6,8 @@
 // 以后“指定人上传、管理员审核”就是：上传的人写 status=pending，
 // 管理员在后台点通过改成 published；App 只拉 published 的。
 
-const CATEGORIES = ["属灵书籍", "生命诗歌", "讲道音频", "讲道视频"];
-const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "讲道音频": "audio", "讲道视频": "video" };
+const CATEGORIES = ["属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息"];
+const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "讲道音频": "audio", "讲道视频": "video", "主日信息": "audio", "灵修信息": "audio" };
 const TYPE_PREFIX = { book: "b", poem: "p", audio: "a", video: "v" };
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // Workers 免费版单次请求体上限 100MB
 const AUDIO_EXTS = ["mp3", "m4a", "wav", "ogg", "aac", "flac"];
@@ -314,7 +314,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <label>标题 *</label><input id="title">
     <label>栏目 *</label>
     <select id="category" onchange="onCategory()">
-      <option>属灵书籍</option><option>生命诗歌</option><option>讲道音频</option><option>讲道视频</option>
+      <option>属灵书籍</option><option>生命诗歌</option><option>讲道音频</option><option>讲道视频</option><option>主日信息</option><option>灵修信息</option>
     </select>
     <label>简介</label><input id="description" placeholder="一句话简介">
     <div id="textBlock">
@@ -344,7 +344,7 @@ var items = [];
 function showMsg(t, id) { document.getElementById(id || "msg").textContent = t || ""; }
 function onCategory() {
   var c = document.getElementById("category").value;
-  var isMedia = (c === "讲道音频" || c === "讲道视频");
+  var isMedia = (c === "讲道音频" || c === "讲道视频" || c === "主日信息" || c === "灵修信息");
   document.getElementById("fileBlock").style.display = isMedia ? "block" : "none";
   document.getElementById("textBlock").style.display = isMedia ? "none" : "block";
 }
