@@ -1,0 +1,59 @@
+# 城光 — GitHub Actions 自动打 APK
+# 把本工程推到 GitHub，Actions 会自动编译 debug APK，
+# 并在 Releases 里发布，可直接下载安装到安卓手机上。
+# 触发：推到 main 分支，或在 Actions 页面点 Run workflow 手动触发。
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 注意：不要用 android-actions/setup-android@v3，它会尝试安装已被 Google
+      # 移除的旧包 `tools`，导致 sdkmanager 退出码 1。ubuntu-latest 自带
+      # Android SDK（ANDROID_HOME 已预设），Gradle 可直接使用。
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk chengguang-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chengguang-debug-apk
+          path: chengguang-debug.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-${{ github.run_number }}
+          name: 城光 v1.0.0 (Build ${{ github.run_number }})
+          body: |
+            城光 Android 原型（空壳版）。
+            - 4 个栏目：属灵书籍、生命诗歌、讲道音频、讲道视频
+            - 目录来自 app/src/main/assets/catalog.json，示例内容
+            - 正式内容以后换成 Cloudflare R2 链接
+          files: chengguang-debug.apk
