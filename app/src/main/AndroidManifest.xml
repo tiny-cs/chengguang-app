@@ -14,6 +14,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Chengguang">
+        <!-- Sentry 8.x 会通过 SentryInitProvider 在 Application.onCreate 之前自动初始化；
+             DSN 为空时它会直接崩溃（"DSN is required"），根本到不了 ErrorReporting.init() 的
+             空 DSN 保护。先彻底关掉自动初始化，等以后配了真实 DSN 再由 ErrorReporting.init() 手动初始化。 -->
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
