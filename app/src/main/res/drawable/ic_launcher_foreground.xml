@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 城光图标：深蓝底上的金色光芒 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#C08A2C"
+        android:pathData="M54,30a12,12 0 1,0 0.1,0z" />
+    <path
+        android:strokeColor="#C08A2C"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M54,14v8M54,78v8M30,54h8M70,54h8M37,37l6,6M65,65l6,6M71,37l-6,6M43,65l-6,6" />
+    <path
+        android:strokeColor="#F5D98B"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M28,88h52" />
+</vector>
