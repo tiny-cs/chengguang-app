@@ -51,6 +51,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // Pause 图标不在 material-icons-core 里（只有 Home/List/Person/PlayArrow 等 58 个），
+    // 必须加 extended，否则 Icons.Default.Pause 编译报错
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
