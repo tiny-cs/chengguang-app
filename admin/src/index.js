@@ -9,7 +9,10 @@
 const CATEGORIES = ["属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息"];
 const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "讲道音频": "audio", "讲道视频": "video", "主日信息": "audio", "灵修信息": "audio" };
 const TYPE_PREFIX = { book: "b", poem: "p", audio: "a", video: "v" };
-const MAX_FILE_BYTES = 100 * 1024 * 1024; // Workers 免费版单次请求体上限 100MB
+const MAX_FILE_BYTES = 100 * 1024 * 1024; // 旧的单次上传路径：Workers 免费版单次请求体上限 100MB
+const PART_SIZE = 10 * 1024 * 1024; // 分块上传：每块 10MB（R2 要求除最后一块外每块 >= 5MB）
+const MAX_AUDIO_BYTES = 500 * 1024 * 1024; // 音频分块上传上限 500MB
+const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024; // 视频分块上传上限 2GB
 const AUDIO_EXTS = ["mp3", "m4a", "wav", "ogg", "aac", "flac"];
 const VIDEO_EXTS = ["mp4", "mov", "webm", "mkv", "m4v"];
 const CATALOG_KEY = "catalog.json";
@@ -162,6 +165,124 @@ export default {
     // ---- 以下 API 全部要登录 ----
     const authErr = await requireAuth(request, env);
     if (authErr) return authErr;
+
+    // ---- 分块上传（大文件直传 R2，绕过 Workers 单次 100MB 请求体上限） ----
+    // 流程：init 建分块上传 -> 每个 part 单独 POST 原始块（每块 10MB） -> complete 合并写目录。
+    // 每块都走 Worker 转发到 R2，不需要 S3 密钥；admin.maihe334.ccwu.cc 在国内也能打开。
+    // 音频上限 500MB，视频上限 2GB；每块 10MB，2GB 共 200 块，远低于 R2 的 10000 块上限。
+    function mediaLimit(type) { return type === "audio" ? MAX_AUDIO_BYTES : MAX_VIDEO_BYTES; }
+    function mediaLimitText(type) { return type === "audio" ? "500MB" : "2GB"; }
+
+    // POST /api/upload/init {title, category, description, duration, filename, fileSize, contentType}
+    if (path === "/api/upload/init" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const title = String(body.title || "").trim();
+      const category = String(body.category || "").trim();
+      const filename = String(body.filename || "");
+      const fileSize = Number(body.fileSize);
+      if (!title) return err("请填写标题");
+      if (!CATEGORIES.includes(category)) return err("栏目不对");
+      const type = TYPE_BY_CATEGORY[category];
+      if (type !== "audio" && type !== "video") return err("这个栏目不支持分块上传");
+      const ext = extOf(filename);
+      const allowed = type === "audio" ? AUDIO_EXTS : VIDEO_EXTS;
+      if (!allowed.includes(ext)) return err("不支持的文件格式：请传 " + allowed.join("、"));
+      if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
+      if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type) + "：请先压缩或剪短");
+      if (Math.ceil(fileSize / PART_SIZE) > 10000) return err("文件太大");
+      const itemId = newId(type);
+      const key = "media/" + itemId + "." + ext;
+      const contentType = String(body.contentType || "") || (type === "audio" ? "audio/mpeg" : "video/mp4");
+      let mpu;
+      try {
+        mpu = await env.CHENGGUANG_BUCKET.createMultipartUpload(key, {
+          httpMetadata: { contentType },
+        });
+      } catch (e) { return err("创建分块上传失败：" + (e && e.message ? e.message : "R2 错误")); }
+      return json({ ok: true, uploadId: mpu.uploadId, key, itemId, partSize: PART_SIZE });
+    }
+
+    // POST /api/upload/part?uploadId=...&key=media%2F....ext&partNumber=N  body = 一块原始数据
+    if (path === "/api/upload/part" && request.method === "POST") {
+      const uploadId = url.searchParams.get("uploadId") || "";
+      const key = url.searchParams.get("key") || "";
+      const partNumber = Number(url.searchParams.get("partNumber"));
+      if (!uploadId) return err("缺少 uploadId");
+      if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("key 不对");
+      if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) return err("partNumber 不对");
+      let buf;
+      try { buf = await request.arrayBuffer(); } catch (e) { return err("读取分块失败"); }
+      if (buf.byteLength === 0) return err("分块是空的");
+      if (buf.byteLength > PART_SIZE) return err("分块超过 10MB");
+      let part;
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        part = await mpu.uploadPart(partNumber, buf);
+      } catch (e) { return err("上传分块失败：" + (e && e.message ? e.message : "R2 错误")); }
+      return json({ ok: true, etag: part.etag, partNumber: part.partNumber });
+    }
+
+    // POST /api/upload/complete {uploadId, key, parts:[{partNumber, etag}], title, category, description, duration, fileSize}
+    if (path === "/api/upload/complete" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const uploadId = String(body.uploadId || "");
+      const key = String(body.key || "");
+      const parts = Array.isArray(body.parts) ? body.parts : [];
+      const title = String(body.title || "").trim();
+      const category = String(body.category || "").trim();
+      const description = String(body.description || "").trim();
+      const duration = String(body.duration || "").trim();
+      const fileSize = Number(body.fileSize);
+      if (!uploadId) return err("缺少 uploadId");
+      if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("key 不对");
+      if (!parts.length) return err("没有任何分块");
+      if (!title) return err("请填写标题");
+      if (!CATEGORIES.includes(category)) return err("栏目不对");
+      const type = TYPE_BY_CATEGORY[category];
+      if (type !== "audio" && type !== "video") return err("这个栏目不支持分块上传");
+      const ext = extOf(key);
+      const allowed = type === "audio" ? AUDIO_EXTS : VIDEO_EXTS;
+      if (!allowed.includes(ext)) return err("文件格式不对");
+      if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
+      if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type));
+      const sorted = parts
+        .map((p) => ({ partNumber: Number(p.partNumber), etag: String(p.etag || "") }))
+        .filter((p) => Number.isInteger(p.partNumber) && p.partNumber >= 1 && p.etag)
+        .sort((a, b) => a.partNumber - b.partNumber);
+      if (!sorted.length) return err("分块信息不对");
+      let obj;
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        obj = await mpu.complete(sorted);
+      } catch (e) { return err("合并分块失败：" + (e && e.message ? e.message : "R2 错误")); }
+      const itemId = key.slice("media/".length, -("." + ext).length);
+      const item = {
+        id: itemId, title, category, type,
+        url: url.origin + "/file/" + key, duration,
+        size: humanSize(fileSize), description, content: "",
+        status: "published", uploadedBy: "admin", createdAt: new Date().toISOString(),
+      };
+      const items = await readCatalog(env);
+      items.unshift(item);
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
+    // POST /api/upload/abort {uploadId, key}  尽力取消，未完成的 R2 分块上传 7 天后也会自动取消
+    if (path === "/api/upload/abort" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const uploadId = String(body.uploadId || "");
+      const key = String(body.key || "");
+      if (!uploadId || !/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("参数不对");
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        await mpu.abort();
+      } catch (e) { /* 已取消或已过期，忽略 */ }
+      return json({ ok: true });
+    }
 
     // 列表 + 存储占用
     if (path === "/api/items" && request.method === "GET") {
@@ -322,9 +443,11 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
       <textarea id="content" placeholder="把正文粘贴在这里，多段换行即可"></textarea>
     </div>
     <div id="fileBlock" style="display:none">
-      <label>音频 / 视频文件 *（单个文件不超过 100MB）</label>
+      <label>音频 / 视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
       <input type="file" id="file">
-      <label>时长（如 32:10，可不填）</label><input id="duration" placeholder="32:10">
+      <progress id="upProg" max="100" value="0" style="width:100%;display:none;margin-top:8px"></progress>
+      <div id="upProgText" class="muted" style="margin-top:4px"></div>
+      <label>时长（如 1:05:30，可不填）</label><input id="duration" placeholder="1:05:30">
     </div>
     <div style="height:12px"></div>
     <button onclick="save()">保存</button>
@@ -419,18 +542,86 @@ async function save() {
     if (!d.ok) { showMsg(d.error || "保存失败", "msg2"); return; }
     showMsg("已保存", "msg2"); resetForm(); load(); return;
   }
+  var f = document.getElementById("file").files[0];
+  var cat = document.getElementById("category").value;
+  var isMedia = (cat === "讲道音频" || cat === "讲道视频" || cat === "主日信息" || cat === "灵修信息");
+  // 音视频一律走分块上传：10MB 一块顺序上传，音频上限 500MB，视频上限 2GB
+  if (isMedia && f) {
+    await uploadChunked(title, cat, f);
+    return;
+  }
   var fd = new FormData();
   fd.append("title", title);
-  fd.append("category", document.getElementById("category").value);
+  fd.append("category", cat);
   fd.append("description", document.getElementById("description").value);
   fd.append("duration", document.getElementById("duration").value);
   fd.append("content", document.getElementById("content").value);
-  var f = document.getElementById("file").files[0];
   if (f) fd.append("file", f);
   showMsg("正在上传，请稍等…", "msg2");
   var r2 = await fetch("/api/upload", { method: "POST", body: fd });
   var d2 = await r2.json();
   if (!d2.ok) { showMsg(d2.error || "上传失败", "msg2"); return; }
+  showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
+}
+// 分块上传：init -> 每块顺序 POST -> complete；中途失败就 abort 并报错
+async function uploadChunked(title, category, file) {
+  var prog = document.getElementById("upProg");
+  var progText = document.getElementById("upProgText");
+  var totalParts = 0;
+  function setProg(done, total) {
+    var pct = total ? Math.round(done / total * 100) : 0;
+    prog.style.display = "block";
+    prog.value = pct;
+    progText.textContent = "正在上传 " + pct + "%（第 " + done + "/" + total + " 块）";
+  }
+  function fail(t) {
+    prog.style.display = "none";
+    progText.textContent = "";
+    showMsg(t, "msg2");
+  }
+  var initR = await fetch("/api/upload/init", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title, category: category,
+      description: document.getElementById("description").value,
+      duration: document.getElementById("duration").value,
+      filename: file.name, fileSize: file.size, contentType: file.type || "" }) });
+  var init = await initR.json();
+  if (!init.ok) { fail(init.error || "创建上传失败"); return; }
+  totalParts = Math.ceil(file.size / init.partSize);
+  var parts = [];
+  try {
+    for (var i = 0; i < totalParts; i++) {
+      var chunk = file.slice(i * init.partSize, (i + 1) * init.partSize);
+      var r = await fetch("/api/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
+        + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
+        { method: "POST", body: chunk });
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
+      parts.push({ partNumber: d.partNumber, etag: d.etag });
+      setProg(i + 1, totalParts);
+    }
+  } catch (e) {
+    try { await fetch("/api/upload/abort", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: init.uploadId, key: init.key }) }); } catch (e2) {}
+    fail(e.message || "上传失败"); return;
+  }
+  progText.textContent = "正在合并，请稍等…";
+  var cr = await fetch("/api/upload/complete", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uploadId: init.uploadId, key: init.key, parts: parts,
+      title: title, category: category,
+      description: document.getElementById("description").value,
+      duration: document.getElementById("duration").value, fileSize: file.size }) });
+  var cd = await cr.json();
+  if (!cd.ok) {
+    try { await fetch("/api/upload/abort", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: init.uploadId, key: init.key }) }); } catch (e3) {}
+    fail(cd.error || "合并失败"); return;
+  }
+  prog.style.display = "none";
+  progText.textContent = "";
   showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
 }
 async function delItem(id, title) {
