@@ -50,3 +50,5 @@ gradle assembleDebug
 1. 管理员把音视频文件传到 Cloudflare R2 桶
 2. 在 R2 旁放一份同结构的 `catalog.json`，或用 Worker + D1 提供目录接口
 3. App 把本地 `catalog.json` 的读取地址改成 R2 公开链接，其余不动
+
+<!-- 重新触发构建：首个 Actions 运行失败（Build debug APK 步骤 exit 1），原因待查 -->
