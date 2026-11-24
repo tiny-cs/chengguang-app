@@ -1020,7 +1020,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
         )
     }
 
-    // 听书：语速选择（滑杆 0.5x–4.0x，0.1 一格；松手才生效，拖动时不反复重读）
+    // 听书：语速选择（滑杆 0.5x–3.0x，0.1 一格；松手才生效，拖动时不反复重读）
     if (showTtsSpeed) {
         var sliderSpeed by remember { mutableStateOf(TtsReader.speed) }
         AlertDialog(
@@ -1043,8 +1043,8 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                         onValueChange = { sliderSpeed = it },
                         onValueChangeFinished = { TtsReader.updateSpeed(sliderSpeed) },
                         valueRange = TtsReader.SPEED_MIN..TtsReader.SPEED_MAX,
-                        // 0.5–4.0 以 0.1 为一格是 35 段，中间 34 个停靠点
-                        steps = 34,
+                        // 0.5–3.0 以 0.1 为一格是 25 段，中间 24 个停靠点
+                        steps = 24,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(
@@ -1052,7 +1052,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("0.5x", fontSize = 12.sp, color = theme.muted)
-                        Text("4.0x", fontSize = 12.sp, color = theme.muted)
+                        Text("3.0x", fontSize = 12.sp, color = theme.muted)
                     }
                 }
             }
