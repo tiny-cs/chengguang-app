@@ -624,12 +624,12 @@ async function importDocFile() {
         var line = "";
         for (var i = 0; i < tc.items.length; i++) {
           var s = tc.items[i].str || "";
-          if (tc.items[i].hasEOL) line += s + "\n";
+          if (tc.items[i].hasEOL) line += s + "\\n";
           else line += s;
         }
         pages.push(line);
       }
-      text = pages.join("\n\n");
+      text = pages.join("\\n\\n");
     } else if (lower.endsWith(".docx")) {
       if (typeof mammoth === "undefined") throw new Error("Word 解析库没加载上，请检查网络后刷新再试");
       var ab = await f.arrayBuffer();
@@ -640,12 +640,12 @@ async function importDocFile() {
     } else {
       throw new Error("只支持 TXT、PDF、Word .docx 三种文件");
     }
-    text = String(text || "").replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    text = String(text || "").replace(/\\r\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
     if (!text) throw new Error("没提取到文字：PDF 可能是扫描图片版，请用文字版 PDF；Word 请确认里面有文字");
     if (text.length > 1000000) throw new Error("这本书太长了（超过 100 万字），请按章节拆成多个文件分别导入");
     document.getElementById("content").value = text;
     if (!document.getElementById("title").value.trim()) {
-      document.getElementById("title").value = name.replace(/\.[^.]+$/, "");
+      document.getElementById("title").value = name.replace(/\\.[^.]+$/, "");
     }
     msg.textContent = "已导入 " + text.length + " 字，检查一下正文，确认没问题再点保存。";
   } catch (e) {
