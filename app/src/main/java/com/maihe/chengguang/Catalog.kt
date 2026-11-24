@@ -3,6 +3,7 @@ package com.maihe.chengguang
 import android.content.Context
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -64,6 +65,32 @@ fun loadCatalog(context: Context): List<CatalogItem> {
         catalogJson.decodeFromString<List<CatalogItem>>(text)
     } catch (_: Exception) {
         emptyList()
+    }
+}
+
+/**
+ * 把拉到的远程目录存一份到手机里（catalog-cache.json）。
+ * 下次打开时如果没网、超时拉不到，就用这份，不用再回退到自带旧目录——
+ * 这样只要成功拉过一次，主日信息这些内容就不会因为一次网络不好而整个消失。
+ */
+fun saveRemoteCatalog(context: Context, items: List<CatalogItem>) {
+    try {
+        context.openFileOutput("catalog-cache.json", Context.MODE_PRIVATE).use {
+            it.write(catalogJson.encodeToString(items).toByteArray(Charsets.UTF_8))
+        }
+    } catch (_: Exception) {
+        // 存不下也不影响使用，下次再拉就是了
+    }
+}
+
+/** 读上次存下的远程目录；没有或坏了返回 null，调用方再用内置目录。 */
+fun loadCachedCatalog(context: Context): List<CatalogItem>? {
+    return try {
+        val text = context.openFileInput("catalog-cache.json").bufferedReader().use { it.readText() }
+        val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
+        if (items.isEmpty()) null else items
+    } catch (_: Exception) {
+        null
     }
 }
 

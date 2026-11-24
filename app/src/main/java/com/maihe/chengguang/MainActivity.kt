@@ -125,11 +125,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ChengguangApp() {
     val context = LocalContext.current
-    // 先显示内置目录，再在后台拉远程目录；拉不到（没网、后台没部署）就继续用内置的。
-    var items by remember { mutableStateOf(loadCatalog(context)) }
+    // 先显示上次存下的远程目录（有的话），没有就用内置目录；再在后台拉远程目录，
+    // 拉到了就更新界面并存一份，下次没网也能用。拉不到就保持现在的显示，不会整个变空。
+    var items by remember { mutableStateOf(loadCachedCatalog(context) ?: loadCatalog(context)) }
     LaunchedEffect(Unit) {
         val remote = withContext(Dispatchers.IO) { fetchRemoteCatalog() }
-        if (remote != null && remote.isNotEmpty()) items = remote
+        if (remote != null && remote.isNotEmpty()) {
+            items = remote
+            saveRemoteCatalog(context, remote)
+        }
     }
     val downloads = remember { DownloadStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
