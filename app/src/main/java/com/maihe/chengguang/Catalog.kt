@@ -31,7 +31,14 @@ data class CatalogItem(
     val createdAt: String = ""
 )
 
-val CATEGORIES = listOf("属灵书籍", "生命诗歌", "主日信息", "灵修信息", "专题讲座")
+val CATEGORIES = listOf("属灵书籍", "敬拜赞美", "主日信息", "灵修信息", "专题讲座")
+
+/**
+ * 旧栏目名兼容：服务器目录里已存的诗还是“生命诗歌”，读进来就改成“敬拜赞美”，
+ * 不用改服务器数据；新上传的已经是新名字，不受影响。
+ */
+private fun List<CatalogItem>.normalizedCategories(): List<CatalogItem> =
+    map { if (it.category == "生命诗歌") it.copy(category = "敬拜赞美") else it }
 
 /**
  * 管理后台的目录地址（自定义域名，国内可访问）：
@@ -62,7 +69,7 @@ private val catalogJson = Json { ignoreUnknownKeys = true }
 fun loadCatalog(context: Context): List<CatalogItem> {
     return try {
         val text = context.assets.open("catalog.json").bufferedReader().use { it.readText() }
-        catalogJson.decodeFromString<List<CatalogItem>>(text)
+        catalogJson.decodeFromString<List<CatalogItem>>(text).normalizedCategories()
     } catch (_: Exception) {
         emptyList()
     }
@@ -87,7 +94,7 @@ fun saveRemoteCatalog(context: Context, items: List<CatalogItem>) {
 fun loadCachedCatalog(context: Context): List<CatalogItem>? {
     return try {
         val text = context.openFileInput("catalog-cache.json").bufferedReader().use { it.readText() }
-        val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
+        val items = catalogJson.decodeFromString<List<CatalogItem>>(text).normalizedCategories()
         if (items.isEmpty()) null else items
     } catch (_: Exception) {
         null
@@ -112,7 +119,7 @@ fun fetchRemoteCatalog(): List<CatalogItem>? {
         if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
         val text = conn.inputStream.bufferedReader().use { it.readText() }
         val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
-        items.filter { it.status.isBlank() || it.status == "published" }
+        items.filter { it.status.isBlank() || it.status == "published" }.normalizedCategories()
     } catch (_: IOException) {
         // 没网、超时、连接被关：慢网络下的正常情况，静默用内置目录，不上报 Sentry
         null

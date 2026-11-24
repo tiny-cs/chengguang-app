@@ -79,7 +79,7 @@ private val Teal = Color(0xFF2E7D6B)
 
 fun categoryColor(category: String): Color = when (category) {
     "属灵书籍" -> Gold
-    "生命诗歌" -> Navy
+    "敬拜赞美" -> Navy
     "主日信息" -> Purple
     "灵修信息" -> Leaf
     "专题讲座" -> Teal
@@ -382,7 +382,7 @@ fun CategoryCard(name: String, count: Int, modifier: Modifier = Modifier, onClic
                 Text(
                     text = when (name) {
                         "属灵书籍" -> "书"
-                        "生命诗歌" -> "诗"
+                        "敬拜赞美" -> "敬"
                         "主日信息" -> "主"
                         "灵修信息" -> "灵"
                         "专题讲座" -> "专"
@@ -679,7 +679,7 @@ fun MineScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("城光是属灵内容 App：属灵书籍、生命诗歌、主日信息、灵修信息、专题讲座。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
+                    Text("城光是属灵内容 App：属灵书籍、敬拜赞美、主日信息、灵修信息、专题讲座。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("版本：${BuildConfig.VERSION_NAME}（远程目录版）", fontSize = 13.sp, color = Color.Gray)
                 }
