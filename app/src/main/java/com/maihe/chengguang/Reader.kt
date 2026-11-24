@@ -1227,12 +1227,18 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
         )
     }
 
-    // 听书：音色选择
+    // 听书：音色选择（每行：点名字选音色，点“试听”用这个音色读一句样例；样例不改已选音色）
     if (showTtsVoice) {
         AlertDialog(
-            onDismissRequest = { showTtsVoice = false },
+            onDismissRequest = {
+                TtsReader.cancelPreview()
+                showTtsVoice = false
+            },
             confirmButton = {
-                TextButton(onClick = { showTtsVoice = false }) { Text("完成") }
+                TextButton(onClick = {
+                    TtsReader.cancelPreview()
+                    showTtsVoice = false
+                }) { Text("完成") }
             },
             title = { Text("音色") },
             text = {
@@ -1254,16 +1260,36 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                             }
                         }
                         items(TtsReader.chineseVoices) { voice ->
-                            TextButton(
-                                onClick = { TtsReader.setVoice(voice.name) },
-                                modifier = Modifier.fillMaxWidth()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    if (TtsReader.voiceName == voice.name) "✓ ${voice.name}" else voice.name,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textAlign = TextAlign.Start
-                                )
+                                TextButton(
+                                    onClick = { TtsReader.setVoice(voice.name) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Text(
+                                            if (TtsReader.voiceName == voice.name) "✓ ${voice.name}" else voice.name,
+                                            fontSize = 14.sp,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textAlign = TextAlign.Start
+                                        )
+                                        Text(
+                                            TtsReader.voiceLabel(voice),
+                                            fontSize = 12.sp,
+                                            color = theme.muted,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            textAlign = TextAlign.Start
+                                        )
+                                    }
+                                }
+                                TextButton(onClick = { TtsReader.previewVoice(voice) }) {
+                                    Text(
+                                        if (TtsReader.previewVoiceName == voice.name) "试听中…" else "试听",
+                                        fontSize = 13.sp
+                                    )
+                                }
                             }
                         }
                     }

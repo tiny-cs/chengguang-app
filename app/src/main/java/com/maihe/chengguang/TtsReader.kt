@@ -137,6 +137,30 @@ object TtsReader {
     var chineseVoices by mutableStateOf<List<Voice>>(emptyList())
         private set
 
+    /** 试听样例（一句固定中文）；样例的 utteranceId 是 "preview" + 序号，不会和正文的 p{段}s{句} 撞 */
+    private const val PREVIEW_TEXT = "这是城光听书的试听。"
+    private const val PREVIEW_ID_PREFIX = "preview"
+
+    /** 正在试听的音色名（空表示没在试听）；对话框里用来显示“试听中…” */
+    var previewVoiceName by mutableStateOf("")
+        private set
+    private var previewActive = false
+    private var previewResume = false
+    private var previewSeq = 0
+    private var activePreviewSeq = 0
+
+    /** 音色行下面的小字：离线/联网 + 音质（quality 没给就不写）。 */
+    fun voiceLabel(voice: Voice): String {
+        val net = if (voice.isNetworkConnectionRequired) "需联网" else "离线可用"
+        val quality = when {
+            voice.quality >= Voice.QUALITY_HIGH -> "高音质"
+            voice.quality == Voice.QUALITY_NORMAL -> "标准"
+            voice.quality in Voice.QUALITY_VERY_LOW..Voice.QUALITY_LOW -> "低音质"
+            else -> ""
+        }
+        return if (quality.isEmpty()) net else "$net · $quality"
+    }
+
     private data class PlanItem(val para: Int, val sent: Int, val text: String)
 
     private var tts: TextToSpeech? = null
@@ -181,11 +205,21 @@ object TtsReader {
     }
 
     fun setVoice(name: String) {
+        // 正在试听就先停掉样例（不改已选的音色以外的任何东西）；试听前在读，
+        // 选完音色就按原来的语义恢复朗读（新音色从当前句重读）
+        val resumeAfterPreview = previewActive && previewResume
+        if (previewActive) {
+            try { tts?.stop() } catch (_: Exception) {}
+            previewActive = false
+            previewVoiceName = ""
+            previewResume = false
+        }
         voiceName = name
         appContext?.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
             ?.edit()?.putString("tts_voice_name", name)?.apply()
         applyVoiceAndRate()
         if (isReading) restartCurrent()
+        else if (resumeAfterPreview) resume()
     }
 
     // 同上：不能叫 setSleepMinutes，var sleepMinutes 自带的 setter 已占了这个签名
@@ -366,6 +400,7 @@ object TtsReader {
     }
 
     fun resume() {
+        if (previewActive) return // 试听中不恢复，等样例读完自动恢复
         if (!isActive || currentBook == null || isReading) return
         if (!isReady) {
             pendingStart = { beginSpeaking() }
@@ -383,6 +418,73 @@ object TtsReader {
         if (isReading) pause() else resume()
     }
 
+    // ---------- 音色试听 ----------
+
+    /**
+     * 试听某个音色：用这个音色读一句固定样例。
+     * 正在读就先 pause() 停住当前句（planIndex 停在当前句，恢复时从这句开头重读，
+     * 进度不丢）；样例用 QUEUE_FLUSH，读完 onDone 会切回已选音色、恢复朗读。
+     * 没在读就直接读样例，读完只切回已选音色。
+     * 再点另一个音色的试听会先停掉上一条样例，不叠音。
+     * 注意：只切 engine.voice，不碰 voiceName（持久化的 tts_voice_name 不动）。
+     */
+    fun previewVoice(voice: Voice) {
+        val engine = tts ?: return
+        if (!isReady) return
+        // 试听完要不要恢复朗读：正在读，或上一条试听就是为了恢复而停的书
+        val resumeAfter = isReading || (previewActive && previewResume)
+        if (previewActive) {
+            try { engine.stop() } catch (_: Exception) {}
+            previewActive = false
+            previewVoiceName = ""
+        }
+        if (isReading) pause()
+        previewSeq++
+        activePreviewSeq = previewSeq
+        previewResume = resumeAfter
+        previewActive = true
+        previewVoiceName = voice.name
+        try {
+            engine.voice = voice
+            engine.setSpeechRate(speed)
+            engine.speak(PREVIEW_TEXT, TextToSpeech.QUEUE_FLUSH, null, PREVIEW_ID_PREFIX + previewSeq)
+        } catch (_: Exception) {
+            finishPreviewNow()
+        }
+    }
+
+    /** 样例读完（或出错、被取消）：切回用户已选的音色；试听前在读就恢复朗读。 */
+    private fun finishPreviewNow() {
+        if (!previewActive) return
+        previewActive = false
+        previewVoiceName = ""
+        val shouldResume = previewResume
+        previewResume = false
+        applyVoiceAndRate()
+        if (shouldResume) resume()
+    }
+
+    /** 只有当前这条试听的 onDone/onError 才收尾；上一条被取消的样例如果晚到回调就忽略。 */
+    private fun finishPreview(utteranceId: String?) {
+        val seq = parsePreviewId(utteranceId) ?: return
+        if (!previewActive || seq != activePreviewSeq) return
+        finishPreviewNow()
+    }
+
+    private fun parsePreviewId(id: String?): Int? {
+        if (id.isNullOrEmpty() || !id.startsWith(PREVIEW_ID_PREFIX)) return null
+        return id.removePrefix(PREVIEW_ID_PREFIX).toIntOrNull()
+    }
+
+    /** 对话框关掉时调：停掉正在试听的样例，切回已选音色；试听前在读就恢复朗读。 */
+    fun cancelPreview() {
+        if (!previewActive) return
+        try { tts?.stop() } catch (_: Exception) {}
+        // stop() 不会触发 onDone（只触发 onStop，默认不处理），所以这里直接收尾；
+        // 万一某个引擎晚到了 onDone，finishPreview 会看到 previewActive 已是 false 而忽略。
+        finishPreviewNow()
+    }
+
     /** 关闭：停止朗读，恢复正常阅读界面。 */
     fun stop() {
         stopInternal("未开始")
@@ -390,6 +492,10 @@ object TtsReader {
 
     private fun stopInternal(finalStatus: String) {
         cancelSleep()
+        // 书都停了，试听也没意义了：清掉试听状态（不恢复朗读）
+        previewActive = false
+        previewVoiceName = ""
+        previewResume = false
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -435,6 +541,10 @@ object TtsReader {
 
         override fun onDone(utteranceId: String?) {
             mainHandler.post {
+                if (utteranceId?.startsWith(PREVIEW_ID_PREFIX) == true) {
+                    finishPreview(utteranceId)
+                    return@post
+                }
                 if (!isReading) return@post
                 consecutiveErrors = 0
                 planIndex++
@@ -444,15 +554,21 @@ object TtsReader {
 
         @Suppress("DEPRECATION")
         override fun onError(utteranceId: String?) {
-            onSpeechError()
+            onSpeechError(utteranceId)
         }
 
         override fun onError(utteranceId: String?, errorCode: Int) {
-            onSpeechError()
+            onSpeechError(utteranceId)
         }
 
-        private fun onSpeechError() {
+        private fun onSpeechError(utteranceId: String?) {
             mainHandler.post {
+                if (utteranceId?.startsWith(PREVIEW_ID_PREFIX) == true) {
+                    // 样例读不出来（比如需联网的音色没网）：一样收尾、切回已选音色、恢复朗读，
+                    // 不计入正文的连续错误，也不丢进度
+                    finishPreview(utteranceId)
+                    return@post
+                }
                 if (!isReading) return@post
                 consecutiveErrors++
                 val title = currentBook?.title ?: ""
