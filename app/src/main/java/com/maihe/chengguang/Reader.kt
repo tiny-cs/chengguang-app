@@ -154,6 +154,16 @@ private fun highlightMatches(text: String, query: String): AnnotatedString {
     }
 }
 
+/** 跟读高亮：把当前读的句子标上金色底（和搜索高亮一样的色）。 */
+private fun highlightTtsSentence(paragraph: String, sentIdx: Int): AnnotatedString {
+    val span = splitParagraph(paragraph).getOrNull(sentIdx)
+        ?: return AnnotatedString(paragraph)
+    return buildAnnotatedString {
+        append(paragraph)
+        addStyle(SpanStyle(background = Color(0xFFFFD54F)), span.start, span.end)
+    }
+}
+
 // ---------- 阅读器 ----------
 
 @Composable
@@ -185,6 +195,9 @@ fun ReaderScreen(item: CatalogItem) {
     var showBookmarks by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var resumedHint by remember { mutableStateOf(false) }
+    var showTtsSpeed by remember { mutableStateOf(false) }
+    var showTtsVoice by remember { mutableStateOf(false) }
+    var showTtsSleep by remember { mutableStateOf(false) }
 
     // 全文搜索
     var query by remember { mutableStateOf("") }
@@ -244,6 +257,24 @@ fun ReaderScreen(item: CatalogItem) {
     val firstParaIdx = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
     val isBookmarked = bookmarks.contains(firstParaIdx)
 
+    // 听书状态（TtsReader 是进程级单例，离开页面再回来还能接着控）
+    val ttsActive = TtsReader.isActive && TtsReader.currentBook?.id == item.id
+    val ttsPara = TtsReader.currentPara
+    val ttsSent = TtsReader.currentSent
+
+    // 跟读：读到哪滚到哪；当前段已经在屏幕上就不动，免得来回跳
+    LaunchedEffect(ttsActive, ttsPara, ttsSent) {
+        if (ttsActive && ttsPara in paragraphs.indices) {
+            val pos = ttsPara + 1
+            val visible = listState.layoutInfo.visibleItemsInfo
+            val first = visible.firstOrNull()?.index ?: 0
+            val last = visible.lastOrNull()?.index ?: 0
+            if (pos < first || pos > last) {
+                listState.scrollToItem(pos)
+            }
+        }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
@@ -283,6 +314,23 @@ fun ReaderScreen(item: CatalogItem) {
                     onClick = { showBookmarks = true },
                     contentPadding = PaddingValues(horizontal = 10.dp)
                 ) { Text("我的书签", fontSize = 13.sp) }
+                OutlinedButton(
+                    onClick = {
+                        if (ttsActive) {
+                            TtsReader.togglePause()
+                        } else {
+                            TtsReader.startReading(context, item, paragraphs, firstParaIdx)
+                        }
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    Text(
+                        if (ttsActive) {
+                            if (TtsReader.isReading) "听书中" else "继续听"
+                        } else "听书",
+                        fontSize = 13.sp
+                    )
+                }
             }
 
             // 搜索行：输入框 + 上一个/下一个 + 第 x / n 个 + 清除
@@ -335,6 +383,15 @@ fun ReaderScreen(item: CatalogItem) {
                 )
             }
 
+            if (TtsReader.noChineseVoice) {
+                Text(
+                    "系统没有中文语音，请在系统设置里下载中文语音数据",
+                    fontSize = 13.sp,
+                    color = theme.muted,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                )
+            }
+
             // 正文：标题头 + 一段一项 + 尾部提示
             LazyColumn(
                 state = listState,
@@ -362,7 +419,10 @@ fun ReaderScreen(item: CatalogItem) {
                         Spacer(modifier = Modifier.height(10.dp))
                     } else {
                         Text(
-                            text = highlightMatches(paragraph, if (showSearch) query else ""),
+                            text = when {
+                                ttsActive && idx == ttsPara -> highlightTtsSentence(paragraph, ttsSent)
+                                else -> highlightMatches(paragraph, if (showSearch) query else "")
+                            },
                             fontSize = fontSize.sp,
                             lineHeight = lineHeight.sp,
                             color = theme.text,
@@ -379,6 +439,45 @@ fun ReaderScreen(item: CatalogItem) {
                         Text("正文已随 App 自带，离线也能读，无需下载。", fontSize = 12.sp, color = theme.muted)
                         Spacer(modifier = Modifier.height(16.dp))
                     }
+                }
+            }
+
+            // 听书控制条：听书进行中才显示，关闭后恢复正常阅读界面
+            if (ttsActive) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { TtsReader.togglePause() },
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text(if (TtsReader.isReading) "暂停" else "继续", fontSize = 13.sp) }
+                        OutlinedButton(
+                            onClick = { showTtsSpeed = true },
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text("语速 ${TtsReader.speedLabel()}", fontSize = 13.sp) }
+                        OutlinedButton(
+                            onClick = { showTtsVoice = true },
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text("音色", fontSize = 13.sp) }
+                        OutlinedButton(
+                            onClick = { showTtsSleep = true },
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text(TtsReader.sleepLabel(), fontSize = 13.sp) }
+                        OutlinedButton(
+                            onClick = { TtsReader.stop() },
+                            contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text("关闭", fontSize = 13.sp) }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(TtsReader.status, fontSize = 12.sp, color = theme.muted)
                 }
             }
 
@@ -520,6 +619,89 @@ fun ReaderScreen(item: CatalogItem) {
                         }
                     }
                 }
+            }
+        )
+    }
+
+    // 听书：语速选择
+    if (showTtsSpeed) {
+        AlertDialog(
+            onDismissRequest = { showTtsSpeed = false },
+            confirmButton = {
+                TextButton(onClick = { showTtsSpeed = false }) { Text("完成") }
+            },
+            title = { Text("语速") },
+            text = {
+                OptionRow(
+                    label = "语速",
+                    options = TtsReader.SPEED_LABELS,
+                    selected = TtsReader.SPEEDS.indexOf(TtsReader.speed).coerceAtLeast(0),
+                    onSelect = { TtsReader.setSpeed(TtsReader.SPEEDS[it]) }
+                )
+            }
+        )
+    }
+
+    // 听书：音色选择
+    if (showTtsVoice) {
+        AlertDialog(
+            onDismissRequest = { showTtsVoice = false },
+            confirmButton = {
+                TextButton(onClick = { showTtsVoice = false }) { Text("完成") }
+            },
+            title = { Text("音色") },
+            text = {
+                if (TtsReader.chineseVoices.isEmpty()) {
+                    Text("系统没有中文语音，请在系统设置里下载中文语音数据", fontSize = 14.sp)
+                } else {
+                    LazyColumn(modifier = Modifier.height(320.dp)) {
+                        item {
+                            TextButton(
+                                onClick = { TtsReader.setVoice("") },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (TtsReader.voiceName.isEmpty()) "✓ 系统默认" else "系统默认",
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Start
+                                )
+                            }
+                        }
+                        items(TtsReader.chineseVoices) { voice ->
+                            TextButton(
+                                onClick = { TtsReader.setVoice(voice.name) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (TtsReader.voiceName == voice.name) "✓ ${voice.name}" else voice.name,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Start
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    // 听书：定时停止
+    if (showTtsSleep) {
+        AlertDialog(
+            onDismissRequest = { showTtsSleep = false },
+            confirmButton = {
+                TextButton(onClick = { showTtsSleep = false }) { Text("完成") }
+            },
+            title = { Text("定时停止") },
+            text = {
+                OptionRow(
+                    label = "定时",
+                    options = TtsReader.SLEEP_LABELS,
+                    selected = TtsReader.SLEEP_OPTIONS.indexOf(TtsReader.sleepMinutes).coerceAtLeast(0),
+                    onSelect = { TtsReader.setSleepMinutes(TtsReader.SLEEP_OPTIONS[it]) }
+                )
             }
         )
     }

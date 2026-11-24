@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -334,12 +335,15 @@ fun AudioDetail(
     // 播放状态都存在 AudioPlayer 单例里：离开这个页面也不会丢，回来继续显示
     val status = AudioPlayer.status
     val isPlaying = AudioPlayer.isPlaying
+    val isBuffering = AudioPlayer.isBuffering
     val mode = AudioPlayer.mode
     // 正在播别的歌：这个页面显示那首的状态，进度条先不动，点播放就切到这首
     val playingOther = AudioPlayer.currentItem?.id != null && AudioPlayer.currentItem?.id != item.id
     val shownPosition = if (playingOther) 0 else AudioPlayer.positionMs
     val shownDuration = if (playingOther) 0 else AudioPlayer.durationMs
-    val statusText = if (playingOther && isPlaying) "正在播：${AudioPlayer.currentItem?.title}" else status
+    val statusText = if (playingOther && isPlaying) "正在播：${AudioPlayer.currentItem?.title}"
+        else if (isBuffering && !playingOther) "正在缓冲…"
+        else status
     var dragMs by remember { mutableStateOf<Int?>(null) }
 
     Column(
@@ -409,7 +413,15 @@ fun AudioDetail(
             Text(if (shownDuration > 0) formatMs(shownDuration) else item.duration, fontSize = 13.sp, color = Color.Gray)
         }
         Spacer(modifier = Modifier.height(16.dp))
-        Text(statusText, fontSize = 13.sp, color = Color.Gray)
+        if (isBuffering && !playingOther) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("正在缓冲…", fontSize = 13.sp, color = Color.Gray)
+            }
+        } else {
+            Text(statusText, fontSize = 13.sp, color = Color.Gray)
+        }
         Spacer(modifier = Modifier.height(8.dp))
         Text("离开这个页面也会继续播，通知栏里可以暂停或停止", fontSize = 12.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))

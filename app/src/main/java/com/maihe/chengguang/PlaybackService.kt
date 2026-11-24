@@ -11,8 +11,8 @@ class PlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 整个进程被杀后系统按 START_STICKY 重启：这时播放器状态已丢，别留一个点不动的死通知
-        if (AudioPlayer.currentItem == null) {
+        // 整个进程被杀后系统按 START_STICKY 重启：这时播放器和听书状态都已丢，别留一个点不动的死通知
+        if (AudioPlayer.currentItem == null && !TtsReader.isActive) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -25,9 +25,19 @@ class PlaybackService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            TtsReader.ACTION_TTS_TOGGLE -> {
+                if (TtsReader.isReading) TtsReader.pause() else TtsReader.resume()
+            }
+            TtsReader.ACTION_TTS_STOP -> {
+                TtsReader.stop()
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
-        // ACTION_UPDATE 或空 intent：刷新通知并保活
-        val notification = AudioPlayer.buildNotification(this)
+        // ACTION_UPDATE 或空 intent：刷新通知并保活；听书在进行时显示听书的通知
+        val notification =
+            if (TtsReader.isActive) TtsReader.buildNotification(this)
+            else AudioPlayer.buildNotification(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 AudioPlayer.NOTIF_ID,

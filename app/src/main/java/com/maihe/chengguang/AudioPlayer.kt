@@ -36,6 +36,9 @@ object AudioPlayer {
         private set
     var isPlaying by mutableStateOf(false)
         private set
+    /** 正在等数据（缓冲中）：详情页显示“正在缓冲…”，而不是误以为在播 */
+    var isBuffering by mutableStateOf(false)
+        private set
     var durationMs by mutableIntStateOf(0)
         private set
     var positionMs by mutableIntStateOf(0)
@@ -102,6 +105,7 @@ object AudioPlayer {
         currentSource = source
         status = "准备中…"
         isPlaying = false
+        isBuffering = false
         positionMs = 0
         durationMs = 0
         val p = playerOrCreate()
@@ -117,9 +121,17 @@ object AudioPlayer {
             p.setOnErrorListener { _, _, _ ->
                 status = "加载失败，请检查网络"
                 isPlaying = false
+                isBuffering = false
                 reportMessage("audio-playback", item.title)
                 refreshNotification()
                 true
+            }
+            p.setOnInfoListener { _, what, _ ->
+                when (what) {
+                    MediaPlayer.MEDIA_INFO_BUFFERING_START -> { isBuffering = true; true }
+                    MediaPlayer.MEDIA_INFO_BUFFERING_END -> { isBuffering = false; true }
+                    else -> false
+                }
             }
             p.setOnCompletionListener { onTrackEnded() }
             p.prepareAsync()
@@ -169,6 +181,7 @@ object AudioPlayer {
             currentItem?.let { reportMessage("audio-pause", it.title) }
         }
         isPlaying = false
+        isBuffering = false
         if (status == "正在播放") status = "已暂停"
         refreshNotification()
     }
@@ -301,6 +314,7 @@ object AudioPlayer {
         } catch (_: Exception) {
         }
         isPlaying = false
+        isBuffering = false
         positionMs = 0
         status = "已停止"
         stopService()
