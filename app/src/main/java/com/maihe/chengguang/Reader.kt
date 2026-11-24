@@ -556,6 +556,14 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
         }
     }
 
+    /** 点段开始听：先停掉正在读的（清掉 TTS 队列），再从这段重开。
+     * 不能直接调 startReading：同一本书暂停中时它会 resume 旧位置、忽略新段落；
+     * 正在读时直接调会把新句子追加到队列尾，和正在读的叠起来。 */
+    fun startReadingFrom(paraIdx: Int) {
+        if (TtsReader.isActive) TtsReader.stop()
+        TtsReader.startReading(context, item, paragraphs, paraIdx)
+    }
+
     LaunchedEffect(query) {
         if (query.isBlank()) {
             matchIndices = emptyList()
@@ -891,7 +899,8 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                                 textColor = theme.text,
                                 onEditNote = { editingNote = idx },
                                 onLongPress = { noteTarget = idx },
-                                onTapTurn = null
+                                onTapTurn = null,
+                                onTapRead = { startReadingFrom(idx) }
                             )
                         }
                     }
@@ -1134,6 +1143,10 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                 noteTarget = null
                 editingNote = targetIdx
             },
+            onListenFromHere = {
+                noteTarget = null
+                startReadingFrom(targetIdx)
+            },
             onDismiss = { noteTarget = null }
         )
     }
@@ -1322,7 +1335,8 @@ private fun ReaderTail(theme: ReaderTheme) {
  * 一段正文（滚动模式和仿真模式共用）。
  * 批注笔记：整段是划线底色（半透明，盖在主题底色上）；
  * 搜索命中词和听书跟读句子的金色底是标在字上的，叠在段落底色上面。
- * 滚动模式：点按/长按走 combinedClickable（点有批注的段落看批注，长按出批注菜单）。
+ * 滚动模式：点按/长按走 combinedClickable（点一段从这段开始听；长按出批注菜单）。
+ * 批注编辑不走段落点按，走段落下面那行“✎ 批注文字”（可点）和长按菜单里的“写批注/编辑批注”。
  * 仿真模式：点按分两半翻页（左半边上一页、右半边下一页），长按还是批注菜单；
  * 有批注的段落点按先看批注，不翻页。
  */
@@ -1340,7 +1354,8 @@ private fun ParagraphBlock(
     textColor: Color,
     onEditNote: () -> Unit,
     onLongPress: () -> Unit,
-    onTapTurn: ((tapX: Float, width: Float) -> Unit)? = null
+    onTapTurn: ((tapX: Float, width: Float) -> Unit)? = null,
+    onTapRead: (() -> Unit)? = null
 ) {
     Box(
         modifier = Modifier
@@ -1359,7 +1374,7 @@ private fun ParagraphBlock(
                     }
                 } else {
                     Modifier.combinedClickable(
-                        onClick = { if (noteText.isNotBlank()) onEditNote() },
+                        onClick = { onTapRead?.invoke() },
                         onLongClick = onLongPress
                     )
                 }

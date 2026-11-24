@@ -221,7 +221,7 @@ fun copyNotesText(context: Context, text: String, label: String = "城光批注"
 
 // ---------- 弹窗 ----------
 
-/** 长按段落弹出的菜单：选划线颜色 / 取消划线 / 写批注。 */
+/** 长按段落弹出的菜单：选划线颜色 / 取消划线 / 写批注 / 从这里听。 */
 @Composable
 fun ParagraphNoteMenuDialog(
     paraIdx: Int,
@@ -231,6 +231,7 @@ fun ParagraphNoteMenuDialog(
     onPickColor: (HighlightColor) -> Unit,
     onClearHighlight: () -> Unit,
     onEditNote: () -> Unit,
+    onListenFromHere: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -273,6 +274,9 @@ fun ParagraphNoteMenuDialog(
                     OutlinedButton(onClick = onEditNote) {
                         Text(if (entry?.note.isNullOrBlank()) "写批注" else "编辑批注", fontSize = 13.sp)
                     }
+                }
+                OutlinedButton(onClick = onListenFromHere) {
+                    Text("从这里听", fontSize = 13.sp)
                 }
             }
         }
