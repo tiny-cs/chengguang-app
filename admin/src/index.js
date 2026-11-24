@@ -575,6 +575,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
 </style>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
 <h1>城光 · 内容管理</h1>
@@ -608,10 +609,10 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
       <label>正文（书籍 / 诗歌）</label>
       <textarea id="content" placeholder="把正文粘贴在这里，多段换行即可"></textarea>
       <div id="docBlock">
-        <label>或从文件导入正文（TXT / PDF / Word .docx，自动提取文字填到上面）</label>
-        <input type="file" id="docFile" accept=".txt,.pdf,.docx" onchange="importDocFile()">
+        <label>或从文件导入正文（TXT / PDF / Word .docx / EPUB，自动提取文字填到上面）</label>
+        <input type="file" id="docFile" accept=".txt,.pdf,.docx,.epub" onchange="importDocFile()">
         <div id="docImportMsg" class="muted" style="margin-top:4px"></div>
-        <p class="muted">老格式 .doc 不支持，请在 Word 里另存为 .docx 再传。PDF 是扫描图片的提不出文字，请用文字版 PDF。</p>
+        <p class="muted">老格式 .doc 不支持，请在 Word 里另存为 .docx 再传。PDF 是扫描图片的提不出文字，请用文字版 PDF。EPUB 按章节顺序提正文，超过 100 万字会自动截断到 100 万字。TXT 会自动识别 UTF-8 / GBK 编码。</p>
       </div>
     </div>
     <div id="fileBlock" style="display:none">
@@ -709,7 +710,8 @@ async function delFeedback(id) {
   if (!d.ok) { alert(d.error || "删除失败"); return; }
   loadFeedback();
 }
-// 书籍/诗歌从文件导入正文：TXT 直接读，PDF 用 pdf.js 按页提文字，Word .docx 用 mammoth 提纯文本。
+// 书籍/诗歌从文件导入正文：TXT 按 UTF-8 / GB18030 自动识别编码读，PDF 用 pdf.js 按页提文字，
+// Word .docx 用 mammoth 提纯文本，EPUB 用 JSZip 解包、按 spine 顺序提各章正文。
 // 只在浏览器里提取，提取完填进正文框，检查没问题再点保存；原文件不存进 R2。
 async function importDocFile() {
   var input = document.getElementById("docFile");
@@ -721,8 +723,12 @@ async function importDocFile() {
   msg.textContent = "正在提取文字，请稍等…";
   try {
     var text = "";
+    var encNote = "";
+    var isEpub = false;
     if (lower.endsWith(".txt")) {
-      text = await f.text();
+      var dec = decodeTextAuto(await f.arrayBuffer());
+      text = dec.text;
+      encNote = dec.label;
     } else if (lower.endsWith(".pdf")) {
       if (typeof pdfjsLib === "undefined") throw new Error("PDF 解析库没加载上，请检查网络后刷新再试");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
@@ -746,22 +752,144 @@ async function importDocFile() {
       var ab = await f.arrayBuffer();
       var res = await mammoth.extractRawText({ arrayBuffer: ab });
       text = res.value || "";
+    } else if (lower.endsWith(".epub")) {
+      if (typeof JSZip === "undefined") throw new Error("EPUB 解析库没加载上，请检查网络后刷新再试");
+      text = await extractEpubText(await f.arrayBuffer());
+      isEpub = true;
     } else if (lower.endsWith(".doc")) {
       throw new Error("老格式 .doc 提不出文字，请在 Word 里另存为 .docx 再传");
     } else {
-      throw new Error("只支持 TXT、PDF、Word .docx 三种文件");
+      throw new Error("只支持 TXT、PDF、Word .docx、EPUB 四种文件");
     }
     text = String(text || "").replace(/\\r\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
-    if (!text) throw new Error("没提取到文字：PDF 可能是扫描图片版，请用文字版 PDF；Word 请确认里面有文字");
-    if (text.length > 1000000) throw new Error("这本书太长了（超过 100 万字），请按章节拆成多个文件分别导入");
+    if (!text) throw new Error("没提取到文字：PDF 可能是扫描图片版，请用文字版 PDF；Word 请确认里面有文字；EPUB 请确认里面有文字章节");
+    var truncated = false;
+    if (text.length > 1000000) {
+      if (isEpub) { text = text.slice(0, 1000000); truncated = true; }
+      else throw new Error("这本书太长了（超过 100 万字），请按章节拆成多个文件分别导入");
+    }
     document.getElementById("content").value = text;
     if (!document.getElementById("title").value.trim()) {
       document.getElementById("title").value = name.replace(/\\.[^.]+$/, "");
     }
-    msg.textContent = "已导入 " + text.length + " 字，检查一下正文，确认没问题再点保存。";
+    var note = "";
+    if (encNote) note = "已按 " + encNote + " 编码读取。";
+    if (truncated) note += "原书超过 100 万字，已截断到 100 万字，建议按章节拆开分多次导入。";
+    msg.textContent = note + "已导入 " + text.length + " 字，检查一下正文，确认没问题再点保存。";
   } catch (e) {
     msg.textContent = "导入失败：" + (e && e.message ? e.message : "未知错误");
   }
+}
+// TXT 自动识别编码：先按 UTF-8 严格解码，失败就按 GB18030 解码（老中文书常是 GBK，
+// GB18030 是 GBK 的超集，能读 GBK 也能读 GB18030），再失败才按 UTF-8 宽容解码。
+// 返回 { text, label }，label 写进导入提示里，让用户知道按什么编码读的。
+function decodeTextAuto(buf) {
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(buf), label: "UTF-8" };
+  } catch (e1) {}
+  try {
+    return { text: new TextDecoder("gb18030").decode(buf), label: "GB18030" };
+  } catch (e2) {}
+  return { text: new TextDecoder("utf-8").decode(buf), label: "UTF-8" };
+}
+// EPUB 解包提取正文：读 META-INF/container.xml 找到 OPF，再按 spine 顺序读各 XHTML 章节，
+// 去标签取纯文本，章节之间空一行。EPUB2 / EPUB3 都能读，没有导航文件也不影响。
+// 解析失败就抛错（调用方显示中文提示，正文框不会填进半截内容）。
+async function extractEpubText(ab) {
+  var zip;
+  try {
+    zip = await JSZip.loadAsync(ab);
+  } catch (e) {
+    throw new Error("这不是有效的 EPUB 文件（解包失败），请确认文件没有损坏");
+  }
+  var containerFile = zip.file("META-INF/container.xml");
+  if (!containerFile) throw new Error("这不是有效的 EPUB：找不到 META-INF/container.xml");
+  var containerDoc = parseXml(await containerFile.async("string"));
+  var rootfiles = containerDoc.getElementsByTagName("rootfile");
+  var opfPath = "";
+  for (var i = 0; i < rootfiles.length; i++) {
+    var mt = rootfiles[i].getAttribute("media-type") || "";
+    if (mt === "application/oebps-package+xml" || !opfPath) opfPath = rootfiles[i].getAttribute("full-path") || "";
+  }
+  if (!opfPath) throw new Error("这不是有效的 EPUB：container.xml 里没有找到 OPF 文件");
+  var opfFile = getZipFile(zip, opfPath);
+  if (!opfFile) throw new Error("这不是有效的 EPUB：找不到 OPF 文件 " + opfPath);
+  var opfDoc = parseXml(await opfFile.async("string"));
+  var base = opfPath.indexOf("/") >= 0 ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+  var manifest = {};
+  var mitems = opfDoc.getElementsByTagName("item");
+  for (var j = 0; j < mitems.length; j++) {
+    var id = mitems[j].getAttribute("id");
+    var href = mitems[j].getAttribute("href");
+    if (id && href) manifest[id] = href;
+  }
+  var spine = opfDoc.getElementsByTagName("itemref");
+  var chapters = [];
+  for (var k = 0; k < spine.length; k++) {
+    var ref = spine[k].getAttribute("idref");
+    if (!ref || !manifest[ref]) continue;
+    if ((spine[k].getAttribute("linear") || "") === "no") continue;
+    var chapterFile = getZipFile(zip, joinZipPath(base, manifest[ref]));
+    if (!chapterFile) continue;
+    var chapterText = htmlToText(await chapterFile.async("string"));
+    if (chapterText) chapters.push(chapterText);
+  }
+  if (!chapters.length) throw new Error("EPUB 里没找到文字章节，请确认这本是文字版 EPUB");
+  return chapters.join("\\n\\n");
+}
+// 用浏览器自带 DOMParser 解析 XML，解析失败时抛错（不要静默返回空文档）。
+function parseXml(xmlText) {
+  var doc = new DOMParser().parseFromString(xmlText, "text/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("EPUB 里的 XML 解析失败，文件可能损坏");
+  return doc;
+}
+// zip 里按路径找文件：先按原样找，再试 URL 解码后的路径（href 里可能有 %20 这类转义）。
+function getZipFile(zip, path) {
+  var f = zip.file(path);
+  if (f) return f;
+  try {
+    var dec = decodeURIComponent(path);
+    if (dec !== path) return zip.file(dec);
+  } catch (e) {}
+  return null;
+}
+// 把 OPF 里 manifest 的 href（相对 OPF 所在目录）拼成 zip 里的完整路径，顺带处理 ./ 和 ../。
+function joinZipPath(base, href) {
+  var h = href.split("#")[0].split("?")[0];
+  if (h.charAt(0) === "/") return normalizeZipPath(h.slice(1));
+  return normalizeZipPath(base + h);
+}
+function normalizeZipPath(p) {
+  var parts = p.split("/");
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var s = parts[i];
+    if (!s || s === ".") continue;
+    if (s === "..") { out.pop(); continue; }
+    out.push(s);
+  }
+  return out.join("/");
+}
+// 把一章 XHTML 转纯文本：按块级标签断段，段与段之间空一行，跳过 script/style。
+// 用浏览器自带的 HTML 解析器，比正则去标签稳（XHTML 写得不规范也能读）。
+var HTML_BLOCK_TAGS = { P: 1, H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, DIV: 1, SECTION: 1, ARTICLE: 1, BLOCKQUOTE: 1, LI: 1, UL: 1, OL: 1, TABLE: 1, TR: 1, PRE: 1, HR: 1, HEADER: 1, FOOTER: 1, NAV: 1, ASIDE: 1, FIGURE: 1, FIGCAPTION: 1, DT: 1, DD: 1, ADDRESS: 1 };
+function htmlToText(xhtml) {
+  var doc = new DOMParser().parseFromString(xhtml, "text/html");
+  var body = doc.body;
+  if (!body) return "";
+  var out = "";
+  function walk(node) {
+    if (node.nodeType === 3) { out += node.nodeValue || ""; return; }
+    if (node.nodeType !== 1) return;
+    var tag = node.tagName || "";
+    if (tag === "SCRIPT" || tag === "STYLE") return;
+    if (tag === "BR") { out += "\\n"; return; }
+    var kids = node.childNodes;
+    for (var i = 0; i < kids.length; i++) walk(kids[i]);
+    if (HTML_BLOCK_TAGS[tag]) out += "\\n\\n";
+  }
+  walk(body);
+  return out.replace(/[ \\t]+\\n/g, "\\n").replace(/\\n[ \\t]+/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim();
 }
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function resetForm() {
