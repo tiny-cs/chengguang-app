@@ -135,6 +135,147 @@ private fun saveBookmarks(context: Context, bookId: String, bookmarks: Set<Int>)
         .apply()
 }
 
+// ---------- 书籍正文合段（EPUB 硬换行） ----------
+
+/**
+ * 句末标点：上一行以这些结尾就是真断段，否则是 EPUB 排版留下的硬换行，接回去。
+ * 看的是已经拼起来的当前段的最后一个字，也就是上一行的行尾。
+ */
+private val SENTENCE_END_PUNCT = setOf('。', '！', '？', '；', '…', '」', '』', '）', '”', '’')
+
+/**
+ * 闭标点：前面永远不加空格。上一行以数字/拉丁字母结尾（例如脚注号“石頭7”）、
+ * 下一行以，。开头时也要直接拼，否则会拼出“7 ，”“14 。”这种错误空格。
+ */
+private val CLOSING_PUNCT = setOf('，', '。', '！', '？', '；', '：', '、', '」', '』', '）', '”', '’', '…')
+
+/** 中文（或中文标点）：CJK 统一表意文字、扩展 A、部首/符号区、全角形。 */
+private fun isCjkChar(c: Char): Boolean =
+    (c in '\u2E80'..'\u9FFF') || (c in '\uF900'..'\uFAFF') || (c in '\uFF00'..'\uFFEF')
+
+/** 合段结果：新段落列表 + 旧行号 -> 新段号的映射表（搬家书签/批注/上次位置用）。 */
+/* 不加 private：Bookshelf.kt 的阅读进度也要用合段后的段数当总数。 */
+data class MergeResult(
+    val paragraphs: List<String>,
+    val mapping: Map<Int, Int>
+)
+
+/**
+ * 书籍正文合段：只看纯文本（换行和句末标点），不碰任何排版量——
+ * 不用 TextMeasurer，不看字号、行距、页面尺寸。所以段落切分只由文本本身决定：
+ * 改字号只改变仿真模式下一页放几行，绝不改变段落结构、映射表、TTS 的句子划分。
+ *
+ * 规则：
+ * - \r\n、\r 统一成 \n；每行先 trim；空行是段落分界，空行本身不成段。
+ * - 单换行：上一行以句末标点（。！？；…」』）”’）结尾就断段，否则是硬换行，接回去。
+ * - 拼接：换行两边都是中文（或中文标点）就直接拼；下一行以闭标点（，。！？；：、」』）”’）开头也直接拼；
+ *   否则拼一个空格（英文单词被断行时不断词，例如 "From\nthe" 变成 "From the"）。
+ * - mapping：旧行号 -> 新段号；空行就近映射到它后面那段，没有后面就映射到前面那段。
+ * - 只对书籍用；诗一行一段，不合（诗的分段没变，也不用搬家）。
+ */
+/* 不加 private：Bookshelf.kt 的阅读进度也要用合段后的段数当总数。 */
+fun mergeBookParagraphs(content: String): MergeResult {
+    val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
+    val lines = normalized.split("\n")
+    val paragraphs = mutableListOf<String>()
+    val mapping = mutableMapOf<Int, Int>()
+    val blankLines = mutableListOf<Int>()
+    var current = ""
+    for ((lineIdx, rawLine) in lines.withIndex()) {
+        val line = rawLine.trim()
+        if (line.isEmpty()) {
+            if (current.isNotEmpty()) {
+                paragraphs.add(current)
+                current = ""
+            }
+            blankLines.add(lineIdx)
+            continue
+        }
+        if (current.isEmpty()) {
+            current = line
+            mapping[lineIdx] = paragraphs.size
+        } else if (current.last() in SENTENCE_END_PUNCT) {
+            paragraphs.add(current)
+            current = line
+            mapping[lineIdx] = paragraphs.size
+        } else {
+            // 硬换行：接回去
+            val lastChar = current.last()
+            val firstChar = line.first()
+            current = if ((isCjkChar(lastChar) && isCjkChar(firstChar)) || firstChar in CLOSING_PUNCT) {
+                current + line
+            } else {
+                "$current $line"
+            }
+            mapping[lineIdx] = paragraphs.size
+        }
+    }
+    if (current.isNotEmpty()) paragraphs.add(current)
+    // 空行映射：就近到后面那段，没有后面就到前面那段
+    for (blankIdx in blankLines) {
+        val next = ((blankIdx + 1)..lines.lastIndex).firstOrNull { it in mapping }
+        val prev = ((blankIdx - 1) downTo 0).firstOrNull { it in mapping }
+        val target = next?.let { mapping[it] } ?: prev?.let { mapping[it] }
+        if (target != null) mapping[blankIdx] = target
+    }
+    return MergeResult(paragraphs, mapping)
+}
+
+private const val PARA_MERGED_KEY_PREFIX = "para_merged_"
+
+/**
+ * 搬家：合段之后旧段落下标全变了，把这本书存过的书签、批注、上次位置按映射表改写成新下标。
+ * 只搬一次（每本书记一个标记）；搬过的书直接读新的，不再搬。
+ * 必须在书签/批注/上次位置第一次被读出来用之前跑——调用点在 ReaderScreen 里
+ * paragraphs 的 remember 块里，那几处 state 的初始化都在它后面。
+ *
+ * 批注搬家分两步走，避免新旧下标重叠时互相覆盖：先删掉所有要搬的旧条目，
+ * 再按新下标写回（setHighlight/setNote 只改对应字段，落在同一新段的几条会并成一条，
+ * 后写的非空字段为准；只有颜色或只有文字的条目不会互相清掉对方）。
+ */
+private fun migrateParagraphIndices(
+    context: Context,
+    bookId: String,
+    mapping: Map<Int, Int>,
+    notesStore: NotesStore
+) {
+    val prefs = readerPrefs(context)
+    if (prefs.getBoolean(PARA_MERGED_KEY_PREFIX + bookId, false)) return
+    // 书签：旧下标 -> 新下标，映射不到的（内容删剩下的脏数据）直接丢掉
+    val oldBookmarks = loadBookmarks(context, bookId)
+    if (oldBookmarks.isNotEmpty()) {
+        val newBookmarks = oldBookmarks.mapNotNull { mapping[it] }.toSet()
+        if (newBookmarks != oldBookmarks) saveBookmarks(context, bookId, newBookmarks)
+    }
+    // 上次位置：存的是列表位置 = 段落下标 + 1
+    val oldPos = loadLastPosition(context, bookId)
+    if (oldPos > 0) {
+        val oldPara = oldPos - 1
+        val newPara = mapping[oldPara]
+        if (newPara != null && newPara != oldPara) {
+            saveLastPosition(context, bookId, newPara + 1)
+        }
+    }
+    // 批注
+    val oldNotes = notesStore.notesFor(bookId)
+    if (oldNotes.isNotEmpty()) {
+        val snapshot = oldNotes.toMap()
+        val toMove = snapshot.filterKeys { mapping[it] != it }
+        if (toMove.isNotEmpty()) {
+            toMove.keys.forEach { notesStore.removeEntry(bookId, it) }
+            snapshot.forEach { (oldIdx, entry) ->
+                if (mapping[oldIdx] == oldIdx) return@forEach
+                val newIdx = mapping[oldIdx] ?: return@forEach
+                HighlightColor.fromKey(entry.color)?.let { color ->
+                    notesStore.setHighlight(bookId, newIdx, color)
+                }
+                if (entry.note.isNotBlank()) notesStore.setNote(bookId, newIdx, entry.note)
+            }
+        }
+    }
+    prefs.edit().putBoolean(PARA_MERGED_KEY_PREFIX + bookId, true).apply()
+}
+
 // ---------- 章节检测 ----------
 
 /** 章节标题行（按行、去掉首尾空白后判断）。 */
@@ -191,8 +332,22 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
+    // 批注存储要放在分段前面：书籍合段后旧下标搬家要用到它
+    val notesStore = remember { NotesStore(context) }
+    // 分段：书籍先合段（EPUB 硬换行接回去），诗保持一行一段。
+    // 合段只看纯文本（换行和句末标点），不看字号/行距/页面尺寸——
+    // 所以改字号只改变一页放几行，不改变段落切分和下标映射。
+    // 搬家在这里做：书签/批注/上次位置的 state 初始化都在下面，
+    // 它们第一次读到的已经是搬家后的新下标，不存在“先读旧的、后搬家”的竞态。
     val paragraphs = remember(item.id, item.content) {
-        item.content.ifEmpty { "（正文待管理员上传）" }.split("\n")
+        val raw = item.content.ifEmpty { "（正文待管理员上传）" }
+        if (item.type == "book") {
+            val result = mergeBookParagraphs(raw)
+            migrateParagraphIndices(context, item.id, result.mapping, notesStore)
+            result.paragraphs
+        } else {
+            raw.split("\n")
+        }
     }
     // 简繁（持久化，默认简体；只影响正文显示，原文不动）
     var scriptMode by remember { mutableStateOf(loadScriptMode(context)) }
@@ -236,7 +391,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     var bookmarks by remember { mutableStateOf(loadBookmarks(context, item.id)) }
 
     // 批注笔记（二期第 5 块）：本地存，只影响显示，不动原文
-    val notesStore = remember { NotesStore(context) }
+    // （notesStore 在上面分段处就创建好了，合段搬家要用它）
     val notesMap = notesStore.notesFor(item.id)
     var noteTarget by remember { mutableStateOf<Int?>(null) } // 长按弹出的划线/批注菜单
     var editingNote by remember { mutableStateOf<Int?>(null) } // 写批注弹窗

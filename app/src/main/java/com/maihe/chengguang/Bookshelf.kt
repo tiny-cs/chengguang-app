@@ -268,10 +268,13 @@ class BookshelfStore(context: Context) {
  * 段号就是阅读器保存的列表位置（0 是标题头，1..N 是正文段落）。
  */
 fun readProgress(context: Context, item: CatalogItem): Pair<Int, Int> {
-    val total = item.content.split("\n").size.coerceAtLeast(1)
+    // 书籍用合段后的段数当总数（和阅读器里实际段落一致）；诗还是一行一段
+    val total = if (item.type == "book") mergeBookParagraphs(item.content).paragraphs.size
+        else item.content.split("\n").size
+    val totalSafe = total.coerceAtLeast(1)
     val pos = context.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
         .getInt("last_pos_${item.id}", 0)
-    return pos.coerceIn(0, total) to total
+    return pos.coerceIn(0, totalSafe) to totalSafe
 }
 
 fun progressText(context: Context, item: CatalogItem): String {
