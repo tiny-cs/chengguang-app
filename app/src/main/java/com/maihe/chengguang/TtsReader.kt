@@ -94,6 +94,35 @@ private fun splitLongSpan(text: String, span: SentenceSpan, maxLen: Int = 400): 
     return out.ifEmpty { listOf(span) }
 }
 
+// ---------- 朗读文本清理（只清声音，不改显示） ----------
+//
+// 只在 speak 的那一刻，对要读的句子做一份清理后的副本再传给引擎。
+// 显示的段落文字、SentenceSpan 的字符范围、跟读高亮、段落下标、
+// planIndex、utteranceId 一个字都不动；一句清理后还是一句，不拆不并。
+// 英文原样传给引擎（不做句内中英文切换、不换英文音色）。
+
+/**
+ * 句首编号：开头 数字 + . 或 、，且标点后面不是数字。
+ * "3.清教徒传统。" → 删 "3."；"12、第二章" → 删 "12、"；
+ * "3.5斤" 开头也不删（标点后面是数字 5，是小数不是编号）。
+ */
+private val LEADING_NUMBER = Regex("^\\d+[.、](?!\\d)")
+
+/**
+ * 杂 "0"：前面不是数字、后面紧跟中文字符的单个 0（"0它" → "它"）。
+ * "10个" 不动（0 前面是数字）；"0.5" 不动（0 后面是 .）；"2027年" 不动。
+ * 中文字符范围和 Reader.kt 的合段判断一致（\u2E80–\u9FFF、\uF900–\uFAFF）。
+ */
+private val STRAY_ZERO = Regex("(?<!\\d)0(?=[\\u2E80-\\u9FFF\\uF900-\\uFAFF])")
+
+/** 清朗读文本：删 ^、句首编号、杂 "0"。只改声音，不改显示和高亮。 */
+private fun cleanSpeechText(text: String): String {
+    var out = text.replace("^", "")
+    out = LEADING_NUMBER.replace(out, "")
+    out = STRAY_ZERO.replace(out, "")
+    return out
+}
+
 // ---------- TTS 单例 ----------
 
 object TtsReader {
@@ -361,8 +390,16 @@ object TtsReader {
         currentPara = next.para
         currentSent = next.sent
         applyVoiceAndRate()
+        // 只清声音不改显示：清理后的副本传给引擎，plan/高亮/utteranceId 都用原文
+        val spoken = cleanSpeechText(next.text)
+        if (spoken.isBlank()) {
+            // 整句都是编号/杂字符，清完什么都不剩：跳过这句，读下一句
+            planIndex++
+            speakCurrent()
+            return
+        }
         try {
-            tts?.speak(next.text, TextToSpeech.QUEUE_ADD, null, utteranceId(next))
+            tts?.speak(spoken, TextToSpeech.QUEUE_ADD, null, utteranceId(next))
         } catch (_: Exception) {
             status = "朗读失败，请重试"
             reportMessage("tts-reading", item.title)
