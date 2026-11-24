@@ -84,11 +84,12 @@ private enum class ReaderTheme(
     val label: String,
     val bg: Color,
     val text: Color,
-    val muted: Color
+    val muted: Color,
+    val mustRead: Color // 必读书籍的标题红：日间/护眼用深红，夜间用亮红（深红在黑底上太暗）
 ) {
-    DAY("day", "日间", Color.White, Color(0xFF1A1A1A), Color.Gray),
-    NIGHT("night", "夜间", Color(0xFF121212), Color(0xFFD8D8D8), Color(0xFF9E9E9E)),
-    EYE("eye", "护眼", Color(0xFFF5E6C8), Color(0xFF4A3222), Color(0xFF8A6D4B))
+    DAY("day", "日间", Color.White, Color(0xFF1A1A1A), Color.Gray, Color(0xFFC62828)),
+    NIGHT("night", "夜间", Color(0xFF121212), Color(0xFFD8D8D8), Color(0xFF9E9E9E), Color(0xFFEF5350)),
+    EYE("eye", "护眼", Color(0xFFF5E6C8), Color(0xFF4A3222), Color(0xFF8A6D4B), Color(0xFFC62828))
 }
 
 private fun readerPrefs(context: Context) =
@@ -1332,7 +1333,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
 @Composable
 private fun ReaderHeader(item: CatalogItem, theme: ReaderTheme) {
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = theme.text)
+        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = if (item.mustRead) theme.mustRead else theme.text)
         Spacer(modifier = Modifier.height(6.dp))
         Text(item.category, fontSize = 13.sp, color = theme.muted)
         if (item.description.isNotEmpty()) {

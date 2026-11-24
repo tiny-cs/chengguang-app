@@ -18,6 +18,7 @@ admin/
 - **文件**：R2 桶 `chengguang`，`media/<id>.<扩展名>`。桶保持私有，不开公开访问。
 - **目录**：同一桶里的 `catalog.json`，结构和 App 内置 `catalog.json` 完全一样，
   每条多三个字段：`status`（published / pending）、`uploadedBy`、`createdAt`。
+  另外每条还有 `mustRead`（布尔，默认 false）：勾上后 App 里标题显示红色；老条目没有这个字段时按 false 处理。
   App 读的时候只认 published 的；Worker 返回 `/catalog.json` 时也只给 published 的。
 - **密码**：Worker Secret `ADMIN_PASSWORD`，不在代码、不在仓库里。
 
@@ -34,10 +35,10 @@ admin/
 | GET | `/api/items` | 全部目录（含正文全文）+ 存储占用（要登录，留着备用） |
 | GET | `/api/items-lite` | 轻量列表（去掉 `content` 全文）+ 存储占用（要登录；管理页列表用这个，慢网也能几秒出来） |
 | GET | `/api/items/:id` | 单条（含 `content` 全文，给编辑表单用；找不到返回 404）（要登录） |
-| POST | `/api/upload` | multipart 小文件上传（书籍 / 诗歌附件，要登录；音视频已改走分块上传） |
+| POST | `/api/upload` | multipart 小文件上传（书籍 / 诗歌附件，要登录；音视频已改走分块上传）；表单可带 `mustRead`（"true"/"false"，必读书籍） |
 | POST | `/api/upload/init` | 分块上传第 1 步：建分块上传，返回 uploadId / key / partSize=10MB（要登录） |
 | POST | `/api/upload/part?uploadId=&key=&partNumber=` | 分块上传第 2 步：body 为一块原始数据（10MB），返回 etag（要登录） |
-| POST | `/api/upload/complete` | 分块上传第 3 步：合并分块并写目录（要登录） |
+| POST | `/api/upload/complete` | 分块上传第 3 步：合并分块并写目录（要登录）；body 可带 `mustRead`（布尔，必读书籍） |
 | POST | `/api/upload/abort` | 取消未完成的分块上传（要登录） |
 | POST | `/api/upload/attachment` | 讲章附件上传（要登录）：multipart `{itemId, file}`，只收 PDF、PPT、PPTX，≤100MB，存 `media/<id>-slides.<ext>`，写回 `pdfUrl` |
 | DELETE | `/api/items/:id/attachment` | 删讲章附件（要登录）：删 R2 文件并清空 `pdfUrl` |
@@ -46,7 +47,7 @@ admin/
 | POST | `/api/feedback` | 读者提建议（公开，不用登录）：`{text, contact?}` → 存 R2 `feedback.json`，最多 500 条 |
 | GET | `/api/feedback` | 读者建议列表（要登录） |
 | DELETE | `/api/feedback/:id` | 删一条建议（要登录） |
-| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文 / 讲章链接 `pdfUrl` / 歌谱链接 `imageUrl`（要登录） |
+| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文 / 讲章链接 `pdfUrl` / 歌谱链接 `imageUrl` / 必读 `mustRead`（布尔，要登录） |
 | DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（含讲章附件和歌谱图片）（要登录） |
 
 ## 上传规则

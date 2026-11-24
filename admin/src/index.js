@@ -330,6 +330,7 @@ export default {
       const category = String(body.category || "").trim();
       const description = String(body.description || "").trim();
       const duration = String(body.duration || "").trim();
+      const mustRead = body.mustRead === true;
       const fileSize = Number(body.fileSize);
       if (!uploadId) return err("缺少 uploadId");
       if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("key 不对");
@@ -356,7 +357,7 @@ export default {
       const itemId = key.slice("media/".length, -("." + ext).length);
       const item = {
         id: itemId, title, category, type,
-        url: url.origin + "/file/" + key, pdfUrl: "", imageUrl: "", duration,
+        url: url.origin + "/file/" + key, pdfUrl: "", imageUrl: "", duration, mustRead,
         size: humanSize(fileSize), description, content: "",
         status: "published", uploadedBy: "admin", createdAt: new Date().toISOString(),
       };
@@ -442,6 +443,7 @@ export default {
       const description = String(form.get("description") || "").trim();
       const duration = String(form.get("duration") || "").trim();
       const content = String(form.get("content") || "");
+      const mustRead = form.get("mustRead") === "true";
       const file = form.get("file");
       if (!title) return err("请填写标题");
       if (!CATEGORIES.includes(category)) return err("栏目不对");
@@ -459,7 +461,7 @@ export default {
       }
       const now = new Date().toISOString();
       const item = {
-        id: newId(type), title, category, type, url: "", pdfUrl: "", imageUrl: "", duration,
+        id: newId(type), title, category, type, url: "", pdfUrl: "", imageUrl: "", duration, mustRead,
         size: "", description, content: "",
         status: "published", uploadedBy: "admin", createdAt: now,
       };
@@ -523,6 +525,7 @@ export default {
       if (body.content !== undefined) item.content = String(body.content);
       if (typeof body.pdfUrl === "string") item.pdfUrl = body.pdfUrl;
       if (typeof body.imageUrl === "string") item.imageUrl = body.imageUrl;
+      if (typeof body.mustRead === "boolean") item.mustRead = body.mustRead;
       await writeCatalog(env, items);
       return json({ ok: true, item });
     }
@@ -676,6 +679,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <h2 id="formTitle">上传新内容</h2>
     <input type="hidden" id="editId">
     <label>标题 *</label><input id="title">
+    <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="checkbox" id="mustRead" style="width:auto"> 必读书籍（标题显示红色）</label>
     <label>栏目 *</label>
     <select id="category" onchange="onCategory()">
       <option>属灵书籍</option><option>敬拜赞美</option><option>主日信息</option><option>灵修信息</option><option>专题讲座</option>
@@ -1013,6 +1017,7 @@ function resetForm() {
   document.getElementById("description").value = "";
   document.getElementById("content").value = "";
   document.getElementById("duration").value = "";
+  document.getElementById("mustRead").checked = false;
   document.getElementById("file").value = "";
   var docInput = document.getElementById("docFile");
   if (docInput) docInput.value = "";
@@ -1050,6 +1055,7 @@ async function editItem(id) {
   document.getElementById("title").value = it.title;
   document.getElementById("category").value = it.category;
   document.getElementById("description").value = it.description || "";
+  document.getElementById("mustRead").checked = !!it.mustRead;
   document.getElementById("content").value = it.content || "";
   document.getElementById("duration").value = it.duration || "";
   onCategory();
@@ -1080,6 +1086,7 @@ async function save() {
         category: document.getElementById("category").value,
         description: document.getElementById("description").value,
         duration: document.getElementById("duration").value,
+        mustRead: document.getElementById("mustRead").checked,
         content: document.getElementById("content").value }) });
     var d = await r.json();
     if (!d.ok) { showMsg(d.error || "保存失败", "msg2"); return; }
@@ -1107,6 +1114,7 @@ async function save() {
   fd.append("title", title);
   fd.append("category", cat);
   fd.append("description", document.getElementById("description").value);
+  fd.append("mustRead", document.getElementById("mustRead").checked ? "true" : "false");
   fd.append("duration", document.getElementById("duration").value);
   fd.append("content", document.getElementById("content").value);
   if (f && cat !== "敬拜赞美") fd.append("file", f);
@@ -1235,7 +1243,8 @@ async function uploadChunked(title, category, file) {
     body: JSON.stringify({ uploadId: init.uploadId, key: init.key, parts: parts,
       title: title, category: category,
       description: document.getElementById("description").value,
-      duration: document.getElementById("duration").value, fileSize: file.size }) });
+      duration: document.getElementById("duration").value,
+      mustRead: document.getElementById("mustRead").checked, fileSize: file.size }) });
   var cd = await cr.json();
   if (!cd.ok) {
     try { await fetch("/api/upload/abort", { method: "POST",

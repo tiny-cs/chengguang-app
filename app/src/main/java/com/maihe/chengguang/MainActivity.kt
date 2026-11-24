@@ -473,7 +473,7 @@ fun ItemRow(item: CatalogItem, downloads: DownloadStore, onClick: () -> Unit) {
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(item.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(item.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = if (item.mustRead) MustReadRed else Color.Unspecified)
                 Spacer(modifier = Modifier.height(2.dp))
                 val meta = buildString {
                     append(item.category)
@@ -591,7 +591,7 @@ fun MineScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f).clickable { onItem(item) }) {
-                            Text(item.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text(item.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = if (item.mustRead) MustReadRed else Color.Unspecified)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 "${item.category} · ${formatBytes(downloads.localFile(item).length())}",

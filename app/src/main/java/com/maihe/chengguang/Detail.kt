@@ -543,7 +543,7 @@ fun AudioDetail(
             Text("音", color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(modifier = Modifier.height(20.dp))
-        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = if (item.mustRead) MustReadRed else Color.Unspecified)
         Spacer(modifier = Modifier.height(6.dp))
         Text("${item.category} · ${item.duration}", fontSize = 13.sp, color = Color.Gray)
         if (item.description.isNotEmpty()) {
@@ -913,7 +913,7 @@ fun VideoDetail(
                     Text(if (shownDuration > 0) formatMs(shownDuration) else item.duration, fontSize = 13.sp, color = Color.Gray)
                 }
                 Spacer(modifier = Modifier.height(12.dp))
-                Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = if (item.mustRead) MustReadRed else Color.Unspecified)
                 Spacer(modifier = Modifier.height(6.dp))
                 val meta = buildString {
                     append(item.category)

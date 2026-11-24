@@ -1,6 +1,7 @@
 package com.maihe.chengguang
 
 import android.content.Context
+import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -23,6 +24,7 @@ data class CatalogItem(
     val url: String = "",
     val pdfUrl: String = "", // 讲章附件（PDF 优先，也可是 PPT）：音频/视频详情页里查看和下载；为空表示没有
     val imageUrl: String = "", // 歌谱图片（敬拜赞美）：一首歌一张，走 /file/ 代理；为空表示没有
+    val mustRead: Boolean = false, // 必读书籍：标题在 App 里显示红色（默认 false，老目录里没有这个字段也能解出来）
     val duration: String = "",
     val size: String = "",
     val description: String = "",
@@ -33,6 +35,9 @@ data class CatalogItem(
 )
 
 val CATEGORIES = listOf("属灵书籍", "敬拜赞美", "主日信息", "灵修信息", "专题讲座")
+
+/** 必读书籍的标题红：深红，白底列表和详情页上对比约 5.6:1；护眼米色底上约 4.5:1。夜间阅读器不用它（太暗），见 ReaderTheme.mustRead。 */
+val MustReadRed = Color(0xFFC62828)
 
 /**
  * 旧栏目名兼容：服务器目录里已存的诗还是“生命诗歌”，读进来就改成“敬拜赞美”，
