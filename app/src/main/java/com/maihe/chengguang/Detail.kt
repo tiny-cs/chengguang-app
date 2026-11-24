@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import java.io.File
 import java.net.URLEncoder
 
 @Composable
@@ -184,7 +185,8 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
     }
 }
 
-/** 讲章附件：PDF 在 App 里直接看（内置阅读器）；PPT/PPTX 用微软在线预览打开（要联网）。 */
+/** 讲章附件：PDF 在 App 里直接看（内置阅读器）；PPT/PPTX 用微软在线预览打开（要联网）。
+ * 下载过的不会重复下载：下载文件夹里有了就显示“已下载”，点查看直接打开那份。 */
 @Composable
 fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
     if (item.pdfUrl.isBlank()) return
@@ -194,6 +196,33 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
     val isPdf = lower.endsWith(".pdf")
     val isSlides = lower.endsWith(".ppt") || lower.endsWith(".pptx")
     val fileName = item.pdfUrl.substringAfterLast("/").substringBefore("?").ifEmpty { "讲章.pdf" }
+    val downloadsFile = remember(fileName) {
+        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
+    }
+    var slidesDownloaded by remember { mutableStateOf(downloadsFile.exists()) }
+    var waitingDownload by remember { mutableStateOf(false) }
+
+    // 进页面时看一眼下载文件夹（外面下好的、以前下好的都认）
+    LaunchedEffect(item.pdfUrl) {
+        slidesDownloaded = downloadsFile.exists()
+    }
+    // 点了下载后每秒看一次文件出来没有，出来了就显示“已下载”，最多等 2 分钟
+    LaunchedEffect(waitingDownload) {
+        if (!waitingDownload) return@LaunchedEffect
+        var tries = 0
+        while (tries < 120) {
+            delay(1000)
+            tries++
+            if (downloadsFile.exists()) {
+                slidesDownloaded = true
+                waitingDownload = false
+                hint = ""
+                return@LaunchedEffect
+            }
+        }
+        waitingDownload = false
+        hint = "下载好像没完成，请看通知栏"
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         modifier = Modifier.fillMaxWidth()
@@ -209,6 +238,13 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
                 },
                 fontSize = 14.sp
             )
+            if (slidesDownloaded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("✓ 已下载到手机（下载文件夹）", fontSize = 14.sp)
+            } else if (waitingDownload) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("正在下载…", fontSize = 14.sp)
+            }
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -218,9 +254,25 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
                         hint = if (openSlides(context, item.pdfUrl, isPdf)) "" else "打不开讲章，请检查网络后重试"
                     }
                 }) { Text("查看讲章") }
-                OutlinedButton(onClick = {
-                    hint = if (downloadSlides(context, item, fileName)) "已开始下载，可在通知栏查看" else "下载失败，请检查网络后重试"
-                }) { Text("下载讲章") }
+                if (slidesDownloaded) {
+                    OutlinedButton(onClick = {
+                        if (downloadsFile.delete()) {
+                            slidesDownloaded = false
+                            hint = "已删除下载的讲章"
+                        } else {
+                            hint = "删除失败"
+                        }
+                    }) { Text("删除已下载") }
+                } else {
+                    OutlinedButton(onClick = {
+                        if (downloadSlides(context, item, fileName)) {
+                            waitingDownload = true
+                            hint = "已开始下载，可在通知栏查看"
+                        } else {
+                            hint = "下载失败，请检查网络后重试"
+                        }
+                    }) { Text("下载讲章") }
+                }
             }
             if (hint.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))

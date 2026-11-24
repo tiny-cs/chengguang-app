@@ -178,6 +178,16 @@ private suspend fun downloadPdf(context: android.content.Context, url: String, f
         val dir = File(context.cacheDir, "slides").apply { mkdirs() }
         val file = File(dir, "slides-" + url.hashCode() + ".pdf")
         if (!forceRedownload && file.exists() && file.length() > 0) return@withContext file
+        // 已经用“下载讲章”存到手机下载文件夹的，直接打开那份，不用再下一遍
+        val fileName = url.substringAfterLast("/").substringBefore("?").ifEmpty { "讲章.pdf" }
+        val downloaded = File(
+            android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            ), fileName
+        )
+        if (!forceRedownload && downloaded.exists() && downloaded.length() > 0) {
+            return@withContext downloaded
+        }
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
