@@ -10,6 +10,19 @@ import android.os.IBinder
 class PlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 用户把 App 从最近任务里划掉：停掉音频和听书，别让 App 没了还在后台出声。
+     * 注意：按 Home 键退到桌面、按返回键退到桌面都不会调到这里，任务还在，
+     * 音频照常继续播——只有“划掉 App”才停，这正是要的效果。
+     * 不动 onStartCommand 的 START_STICKY / 重启后自停逻辑。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        AudioPlayer.stopPlayback()
+        if (TtsReader.isActive) TtsReader.stop()
+        stopSelf()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 整个进程被杀后系统按 START_STICKY 重启：这时播放器和听书状态都已丢，别留一个点不动的死通知
         if (AudioPlayer.currentItem == null && !TtsReader.isActive) {

@@ -2,6 +2,7 @@ package com.maihe.chengguang
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -95,6 +96,23 @@ sealed interface Route {
 }
 
 class MainActivity : ComponentActivity() {
+    // 视频页画中画状态：进/出 PiP 时系统回调里更新，界面读它来只显示视频（标题栏也藏掉）。
+    val pipMode = mutableStateOf(false)
+    // 视频页注册的“按 Home 时进小窗口”动作；离开视频页时清掉，别的地方按 Home 不触发。
+    var onUserLeaveHintAction: (() -> Unit)? = null
+
+    // 按 Home / 切到最近任务：让视频页有机会进小窗口（播着才进，逻辑在 VideoDetail 里）。
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        onUserLeaveHintAction?.invoke()
+    }
+
+    // 进/出画中画：更新 pipMode，界面跟着只显示视频或恢复正常。
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        pipMode.value = isInPictureInPictureMode
+    }
+
     // Android 13+：通知栏播放控制要这个权限。没给也能后台播，只是通知栏不显示控制按钮。
     private val requestNotificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -140,6 +158,11 @@ fun ChengguangApp() {
     val bookshelf = remember { BookshelfStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
     val current = stack.last()
+    // 视频全屏状态：视频页里切换，上面统一藏标题栏（全屏时标题栏没地方放）。
+    var videoFullscreen by remember { mutableStateOf(false) }
+    // 画中画时也藏标题栏：小窗口里只留视频。
+    val activity = LocalContext.current as? MainActivity
+    val inPip = activity?.pipMode?.value == true
 
     BackHandler(enabled = stack.size > 1) {
         stack.removeAt(stack.lastIndex)
@@ -155,38 +178,47 @@ fun ChengguangApp() {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        when (val r = current) {
-                            is Route.Detail -> items.find { it.id == r.id }?.title ?: "城光"
-                            is Route.Pdf -> r.title
-                            is Route.Bookshelf -> "我的书架"
-                            is Route.Category -> r.name
-                            Route.All -> "全部内容"
-                            Route.Mine -> "我的"
-                            Route.Home -> "城光"
-                        },
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                navigationIcon = {
-                    if (stack.size > 1) {
-                        IconButton(onClick = { stack.removeAt(stack.lastIndex) }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+            // 视频全屏 / 画中画时不画标题栏：全屏要视频占满整个屏幕，小窗口里只留视频。
+            if (!videoFullscreen && !inPip) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            when (val r = current) {
+                                is Route.Detail -> items.find { it.id == r.id }?.title ?: "城光"
+                                is Route.Pdf -> r.title
+                                is Route.Bookshelf -> "我的书架"
+                                is Route.Category -> r.name
+                                Route.All -> "全部内容"
+                                Route.Mine -> "我的"
+                                Route.Home -> "城光"
+                            },
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    navigationIcon = {
+                        if (stack.size > 1) {
+                            IconButton(onClick = { stack.removeAt(stack.lastIndex) }) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                            }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Navy,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Navy,
+                        titleContentColor = Color.White,
+                        navigationIconContentColor = Color.White
+                    )
                 )
-            )
+            }
         },
         bottomBar = {
             if (current is Route.Home || current is Route.All || current is Route.Mine) {
-                NavigationBar(containerColor = Color.White) {
+                Column {
+                    // 迷你播放条：音频在后台播时出现（没在播时不占位置），点它回音频详情页
+                    MiniPlayerBar(
+                        onOpenDetail = { id -> go(Route.Detail(id)) },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                    NavigationBar(containerColor = Color.White) {
                     NavigationBarItem(
                         selected = current is Route.Home,
                         onClick = { goTop(Route.Home) },
@@ -205,6 +237,7 @@ fun ChengguangApp() {
                         icon = { Icon(Icons.Default.Person, contentDescription = "我的") },
                         label = { Text("我的") }
                     )
+                }
                 }
             }
         }
@@ -230,7 +263,8 @@ fun ChengguangApp() {
                         val siblings = items.filter { it.category == item.category && it.type == "audio" }
                         DetailScreen(item, downloads, bookshelf, siblings, onSelectItem = { id ->
                             stack[stack.lastIndex] = Route.Detail(id)
-                        }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) })
+                        }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) },
+                            onFullscreenChange = { videoFullscreen = it })
                     } else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
                 is Route.Pdf -> PdfViewerScreen(r.url, r.title)

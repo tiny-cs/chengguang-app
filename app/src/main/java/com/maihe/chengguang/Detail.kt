@@ -1,13 +1,18 @@
 package com.maihe.chengguang
 
+import android.app.Activity
 import android.app.DownloadManager
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Environment
+import android.util.Rational
 import android.widget.MediaController
 import android.widget.VideoView
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,10 +54,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import java.io.File
 import java.net.URLEncoder
@@ -63,11 +76,12 @@ fun DetailScreen(
     bookshelf: BookshelfStore? = null,
     siblings: List<CatalogItem> = emptyList(),
     onSelectItem: (String) -> Unit = {},
-    onViewPdf: (String, String) -> Unit = { _, _ -> }
+    onViewPdf: (String, String) -> Unit = { _, _ -> },
+    onFullscreenChange: (Boolean) -> Unit = {}
 ) {
     when (item.type) {
         "audio" -> AudioDetail(item, downloads, siblings, onSelectItem, onViewPdf)
-        "video" -> VideoDetail(item, downloads, onViewPdf)
+        "video" -> VideoDetail(item, downloads, onViewPdf, onFullscreenChange)
         else -> ReadingDetail(item, bookshelf)
     }
 }
@@ -436,33 +450,177 @@ fun AudioDetail(
 }
 
 @Composable
-fun VideoDetail(item: CatalogItem, downloads: DownloadStore, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
+fun VideoDetail(
+    item: CatalogItem,
+    downloads: DownloadStore,
+    onViewPdf: (String, String) -> Unit = { _, _ -> },
+    onFullscreenChange: (Boolean) -> Unit = {}
+) {
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val localView = LocalView.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uri = downloads.playUri(item)
     // 缓冲状态：打开先显示“正在加载…”，准备好/出第一帧后消失；
     // 播着播着网卡了（BUFFERING_START）会再出现，播不下去会显示失败。
     // 用 remember(item.id) 存：换一条视频就回到“加载中”，不沿用上一条的状态。
     val buffering = remember(item.id) { mutableStateOf(true) }
     val playFailed = remember(item.id) { mutableStateOf(false) }
+    // 全屏状态：进全屏转横屏、藏系统栏、藏标题栏；退出回竖屏、恢复系统栏。
+    var isFullscreen by remember(item.id) { mutableStateOf(false) }
+    // 画中画要用的：VideoView 引用、视频实际尺寸、页面是不是在前台、
+    // 是不是刚点了进小窗口（进画中画那一下 Activity 也会走 onPause，别误停）。
+    val videoViewRef = remember { mutableStateOf<VideoView?>(null) }
+    val videoSize = remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val pageResumed = remember { mutableStateOf(true) }
+    val autoPaused = remember { mutableStateOf(false) }
+    val pipRequested = remember { mutableStateOf(false) }
+    // 画中画状态在 MainActivity 上（系统回调里更新）：小窗口里只显示视频本身。
+    val inPip = (activity as? MainActivity)?.pipMode?.value == true
+
+    fun setSystemBars(fullscreen: Boolean) {
+        val act = activity ?: return
+        val controller = WindowCompat.getInsetsController(act.window, localView)
+        if (fullscreen) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    fun enterFullscreen() {
+        val act = activity ?: return
+        isFullscreen = true
+        onFullscreenChange(true)
+        act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        setSystemBars(true)
+    }
+
+    fun exitFullscreen() {
+        val act = activity ?: return
+        isFullscreen = false
+        onFullscreenChange(false)
+        act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        setSystemBars(false)
+    }
+
+    /** 画中画窗口比例：按视频实际尺寸来，夹在系统允许的范围里（1:2.39 ~ 2.39:1），超了会抛异常。 */
+    fun pipAspectRatio(w: Int, h: Int): Rational {
+        if (w <= 0 || h <= 0) return Rational(16, 9)
+        val ratio = w.toFloat() / h
+        return when {
+            ratio > 2.39f -> Rational(239, 100)
+            ratio < 1f / 2.39f -> Rational(100, 239)
+            else -> Rational(w, h)
+        }
+    }
+
+    /** 进小窗口：返回 true 表示系统接了。失败时不改任何状态，视频留在原地继续播。 */
+    fun enterPip(): Boolean {
+        val act = activity ?: return false
+        val (w, h) = videoSize.value ?: (16 to 9)
+        pipRequested.value = true
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(pipAspectRatio(w, h))
+            .build()
+        val ok = act.enterPictureInPictureMode(params)
+        if (!ok) pipRequested.value = false
+        return ok
+    }
+
+    // 全屏时按返回先退全屏，不直接退回上一页（这个 BackHandler 比 ChengguangApp
+    // 里那个后注册，启用时优先触发——和书架页多选返回同一个做法）。
+    BackHandler(enabled = isFullscreen) { exitFullscreen() }
+
+    // 按 Home / 切到最近任务时自动进小窗口（只在播着的时候；暂停着不进）。
+    // 离开页面时取消注册，同时把方向和系统栏恢复成跟随系统
+    // （退出全屏时设了竖屏锁定，这里松开，免得别的页面也被锁竖屏）。
+    DisposableEffect(item.id) {
+        val act = activity as? MainActivity
+        act?.onUserLeaveHintAction = {
+            if (videoViewRef.value?.isPlaying == true) enterPip()
+        }
+        onDispose {
+            act?.onUserLeaveHintAction = null
+            activity?.let {
+                it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                if (localView.isAttachedToWindow) {
+                    WindowCompat.getInsetsController(it.window, localView)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+            onFullscreenChange(false)
+        }
+    }
+
+    // 页面前后台：切后台（非画中画）时暂停，回来时如果之前是被系统停的就接着播；
+    // 画中画时 Activity 也会走 onPause，但视频要继续播，别停。
+    // 刚打开还在缓冲、用户就按 Home 的情况：OnPrepared 里先别自动播，等回来再播，
+    // 不然会在后台突然出声。
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    pageResumed.value = false
+                    val act = activity
+                    if (act?.isInPictureInPictureMode == false && !pipRequested.value) {
+                        videoViewRef.value?.let { vv ->
+                            if (vv.isPlaying) {
+                                vv.pause()
+                                autoPaused.value = true
+                            }
+                        }
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    pageResumed.value = true
+                    pipRequested.value = false
+                    if (autoPaused.value) {
+                        videoViewRef.value?.start()
+                        autoPaused.value = false
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 全屏/小窗口时只显示视频本身（标题、下载、讲章都藏起来）；
+    // 视频 Box 是同一个节点，只是换了尺寸，所以横竖屏切换、进出小窗口
+    // 都不会让 VideoView 重建、重播（地址没变时 update 里也不重置）。
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .then(if (isFullscreen || inPip) Modifier else Modifier.verticalScroll(rememberScrollState()))
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .then(
+                    if (isFullscreen || inPip) Modifier.fillMaxSize()
+                    else Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                )
                 .background(Color.Black)
         ) {
             AndroidView(
                 factory = { ctx ->
                     VideoView(ctx).apply {
+                        videoViewRef.value = this
                         val controller = MediaController(ctx)
                         controller.setAnchorView(this)
                         setMediaController(controller)
                         setOnPreparedListener { mp ->
+                            videoSize.value = mp.videoWidth to mp.videoHeight
                             buffering.value = false
-                            mp.start()
+                            // 页面在前台（或在小窗口里）才自动播；刚打开还在缓冲就切后台了，
+                            // 先别出声，等回来再播（见上面的 autoPaused）。
+                            if (pageResumed.value || activity?.isInPictureInPictureMode == true) {
+                                mp.start()
+                            } else {
+                                autoPaused.value = true
+                            }
                         }
                         setOnInfoListener { _, what, _ ->
                             when (what) {
@@ -484,10 +642,17 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore, onViewPdf: (String,
                     // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
                     if (view.tag != uri.toString()) {
                         view.tag = uri.toString()
+                        videoSize.value = null
                         buffering.value = true
                         playFailed.value = false
                         view.setVideoURI(uri)
                     }
+                },
+                onRelease = { v ->
+                    // 离开视频页就彻底停掉，不然 VideoView 会在后台继续出声
+                    // （进画中画、转屏都不会走到这里，组合还在，不会误停）。
+                    videoViewRef.value = null
+                    v.stopPlayback()
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -515,28 +680,53 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore, onViewPdf: (String,
                     )
                 }
             }
+            // 全屏时右上角留一个退出按钮（返回键也能退，这里是给习惯点的人的）；
+            // 小窗口里不显示——小窗口点一下是回 App，不是退全屏。
+            if (isFullscreen && !inPip) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.TopEnd
+                ) {
+                    OutlinedButton(
+                        onClick = { exitFullscreen() },
+                        modifier = Modifier.padding(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) { Text("退出全屏", fontSize = 13.sp) }
+                }
+            }
         }
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(6.dp))
-            val meta = buildString {
-                append(item.category)
-                if (item.duration.isNotEmpty()) append(" · ${item.duration}")
-                if (item.size.isNotEmpty()) append(" · ${item.size}")
-                if (downloads.isDownloaded(item)) append(" · 已下载")
+        if (!isFullscreen && !inPip) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = { enterFullscreen() }) { Text("全屏", fontSize = 14.sp) }
+                OutlinedButton(onClick = { enterPip() }) { Text("小窗口", fontSize = 14.sp) }
             }
-            Text(meta, fontSize = 13.sp, color = Color.Gray)
-            if (item.description.isNotEmpty()) {
+            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                val meta = buildString {
+                    append(item.category)
+                    if (item.duration.isNotEmpty()) append(" · ${item.duration}")
+                    if (item.size.isNotEmpty()) append(" · ${item.size}")
+                    if (downloads.isDownloaded(item)) append(" · 已下载")
+                }
+                Text(meta, fontSize = 13.sp, color = Color.Gray)
+                if (item.description.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(item.description, fontSize = 15.sp, color = Color.DarkGray)
+                }
                 Spacer(modifier = Modifier.height(12.dp))
-                Text(item.description, fontSize = 15.sp, color = Color.DarkGray)
+                Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.height(20.dp))
+                DownloadSection(item, downloads)
+                Spacer(modifier = Modifier.height(16.dp))
+                SlidesSection(item, onViewPdf)
+                Spacer(modifier = Modifier.height(16.dp))
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
-            Spacer(modifier = Modifier.height(20.dp))
-            DownloadSection(item, downloads)
-            Spacer(modifier = Modifier.height(16.dp))
-            SlidesSection(item, onViewPdf)
-            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
