@@ -91,6 +91,7 @@ sealed interface Route {
     data class Category(val name: String) : Route
     data class Detail(val id: String) : Route
     data class Pdf(val url: String, val title: String) : Route
+    data object Bookshelf : Route
 }
 
 class MainActivity : ComponentActivity() {
@@ -136,6 +137,7 @@ fun ChengguangApp() {
         }
     }
     val downloads = remember { DownloadStore(context) }
+    val bookshelf = remember { BookshelfStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
     val current = stack.last()
 
@@ -159,6 +161,7 @@ fun ChengguangApp() {
                         when (val r = current) {
                             is Route.Detail -> items.find { it.id == r.id }?.title ?: "城光"
                             is Route.Pdf -> r.title
+                            is Route.Bookshelf -> "我的书架"
                             is Route.Category -> r.name
                             Route.All -> "全部内容"
                             Route.Mine -> "我的"
@@ -215,18 +218,23 @@ fun ChengguangApp() {
             when (val r = current) {
                 Route.Home -> HomeScreen(items, downloads, onCategory = { go(Route.Category(it)) }, onItem = { go(Route.Detail(it.id)) })
                 Route.All -> AllScreen(items, downloads, onItem = { go(Route.Detail(it.id)) })
-                Route.Mine -> MineScreen(items, downloads, onItem = { go(Route.Detail(it.id)) })
+                Route.Mine -> MineScreen(
+                    items, downloads, bookshelf,
+                    onItem = { go(Route.Detail(it.id)) },
+                    onBookshelf = { go(Route.Bookshelf) }
+                )
                 is Route.Category -> CategoryScreen(r.name, items, downloads, onItem = { go(Route.Detail(it.id)) })
                 is Route.Detail -> {
                     val item = items.find { it.id == r.id }
                     if (item != null) {
                         val siblings = items.filter { it.category == item.category && it.type == "audio" }
-                        DetailScreen(item, downloads, siblings, onSelectItem = { id ->
+                        DetailScreen(item, downloads, bookshelf, siblings, onSelectItem = { id ->
                             stack[stack.lastIndex] = Route.Detail(id)
                         }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) })
                     } else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
                 is Route.Pdf -> PdfViewerScreen(r.url, r.title)
+                is Route.Bookshelf -> BookshelfScreen(bookshelf, items, onItem = { go(Route.Detail(it.id)) })
             }
         }
     }
@@ -428,8 +436,15 @@ fun ItemRow(item: CatalogItem, downloads: DownloadStore, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (CatalogItem) -> Unit) {
+fun MineScreen(
+    items: List<CatalogItem>,
+    downloads: DownloadStore,
+    bookshelf: BookshelfStore,
+    onItem: (CatalogItem) -> Unit,
+    onBookshelf: () -> Unit = {}
+) {
     val downloaded = downloads.downloadedItems(items)
+    val shelfCount = bookshelf.shelfItems(items).size
     val totalBytes = downloads.totalDownloadedBytes(items)
     val feedbackScope = rememberCoroutineScope()
     var feedbackText by remember { mutableStateOf("") }
@@ -463,6 +478,24 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                     Text("已下载（${downloaded.size} 个 · 共 ${formatBytes(totalBytes)}）", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("已下载的音频和视频断网也能播放。点一条打开播放，删掉可释放手机空间。书籍和诗歌正文已随 App 自带，离线也能读，无需下载。", fontSize = 14.sp)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("我的书架（$shelfCount 本）", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("把喜欢的书收进来，按最近阅读、书名、作者排，还能打标签、收藏、批量整理。只存在这台手机上。", fontSize = 13.sp, color = Color.Gray)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onBookshelf) { Text("打开书架") }
                 }
             }
         }

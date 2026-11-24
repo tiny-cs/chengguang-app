@@ -60,6 +60,7 @@ import java.net.URLEncoder
 fun DetailScreen(
     item: CatalogItem,
     downloads: DownloadStore,
+    bookshelf: BookshelfStore? = null,
     siblings: List<CatalogItem> = emptyList(),
     onSelectItem: (String) -> Unit = {},
     onViewPdf: (String, String) -> Unit = { _, _ -> }
@@ -67,13 +68,13 @@ fun DetailScreen(
     when (item.type) {
         "audio" -> AudioDetail(item, downloads, siblings, onSelectItem, onViewPdf)
         "video" -> VideoDetail(item, downloads, onViewPdf)
-        else -> ReadingDetail(item)
+        else -> ReadingDetail(item, bookshelf)
     }
 }
 
 @Composable
-fun ReadingDetail(item: CatalogItem) {
-    ReaderScreen(item)
+fun ReadingDetail(item: CatalogItem, bookshelf: BookshelfStore? = null) {
+    ReaderScreen(item, bookshelf)
 }
 
 private fun formatMs(ms: Int): String {

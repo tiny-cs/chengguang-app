@@ -167,7 +167,7 @@ private fun highlightTtsSentence(paragraph: String, sentIdx: Int): AnnotatedStri
 // ---------- 阅读器 ----------
 
 @Composable
-fun ReaderScreen(item: CatalogItem) {
+fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -221,6 +221,11 @@ fun ReaderScreen(item: CatalogItem) {
     // 离开页面时保存阅读位置
     DisposableEffect(item.id) {
         onDispose { saveLastPosition(context, item.id, listState.firstVisibleItemIndex) }
+    }
+
+    // 进阅读器就算读过：书架里的这本书最近阅读时间更新一下（不在书架的不动；诗歌不进书架）
+    LaunchedEffect(item.id) {
+        if (item.type == "book") bookshelf?.markRead(item.id)
     }
 
     // 关键词变了：重新找匹配，跳到第一个
@@ -330,6 +335,18 @@ fun ReaderScreen(item: CatalogItem) {
                         } else "听书",
                         fontSize = 13.sp
                     )
+                }
+                // 加入书架：只对属灵书籍有效，诗歌不进书架
+                if (item.type == "book" && bookshelf != null) {
+                    val onShelf = bookshelf.isOnShelf(item.id)
+                    OutlinedButton(
+                        onClick = {
+                            if (onShelf) bookshelf.remove(item.id) else bookshelf.add(item)
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp)
+                    ) {
+                        Text(if (onShelf) "已在书架" else "加入书架", fontSize = 13.sp)
+                    }
                 }
             }
 
