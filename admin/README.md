@@ -76,5 +76,8 @@ admin/
 
 - 管理接口只认 Cookie（HttpOnly，30 天），密码本身不经过前端存储。
 - 文件播放走 Worker 代理，不暴露 R2 的公开地址和桶名以外的信息。
+- `/file/` 支持 Range（播放器和下载器都靠它断点续传）和 HEAD：Worker 自己把 Range 头解析成
+  `{offset, length}` 再传给 R2（直接传原始 Range 字符串会抛错、整个请求报 500），越界返回 416。
+  附带 `Accept-Ranges: bytes` 头。
 - 上传只按扩展名白名单收文件，文件名不直接用用户传的文件名（用 `media/<id>.<ext>`）。
 - 目录 JSON 里的 `url` 是 Worker 代理地址，不是 R2 直链。

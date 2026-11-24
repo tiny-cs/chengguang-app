@@ -197,7 +197,12 @@ fun ChengguangApp() {
                 is Route.Category -> CategoryScreen(r.name, items, downloads, onItem = { go(Route.Detail(it.id)) })
                 is Route.Detail -> {
                     val item = items.find { it.id == r.id }
-                    if (item != null) DetailScreen(item, downloads) else Text("内容不存在", modifier = Modifier.padding(16.dp))
+                    if (item != null) {
+                        val siblings = items.filter { it.category == item.category && it.type == "audio" }
+                        DetailScreen(item, downloads, siblings, onSelectItem = { id ->
+                            stack[stack.lastIndex] = Route.Detail(id)
+                        })
+                    } else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
             }
         }

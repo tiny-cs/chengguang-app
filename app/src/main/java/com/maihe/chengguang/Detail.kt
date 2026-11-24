@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,9 +57,14 @@ import kotlinx.coroutines.delay
 import java.net.URLEncoder
 
 @Composable
-fun DetailScreen(item: CatalogItem, downloads: DownloadStore) {
+fun DetailScreen(
+    item: CatalogItem,
+    downloads: DownloadStore,
+    siblings: List<CatalogItem> = emptyList(),
+    onSelectItem: (String) -> Unit = {}
+) {
     when (item.type) {
-        "audio" -> AudioDetail(item, downloads)
+        "audio" -> AudioDetail(item, downloads, siblings, onSelectItem)
         "video" -> VideoDetail(item, downloads)
         else -> ReadingDetail(item)
     }
@@ -250,27 +256,124 @@ private fun downloadSlides(context: Context, item: CatalogItem, fileName: String
     }
 }
 
+/** 播放模式：播完后做什么。单曲循环只重复这一首，其余在同栏目音频里切歌。 */
+enum class PlayMode(val label: String) {
+    ORDER("顺序播放"), SINGLE("单曲循环"), LOOP_ALL("列表循环"), SHUFFLE("随机播放")
+}
+
+private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
+
+private fun speedLabel(speed: Float): String = when (speed) {
+    0.75f -> "0.75x"
+    1f -> "1.0x"
+    1.25f -> "1.25x"
+    1.5f -> "1.5x"
+    else -> "2.0x"
+}
+
 @Composable
-fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
+fun AudioDetail(
+    item: CatalogItem,
+    downloads: DownloadStore,
+    siblings: List<CatalogItem> = emptyList(),
+    onSelectItem: (String) -> Unit = {}
+) {
     val player = remember { MediaPlayer() }
     var status by remember { mutableStateOf("准备中…") }
     var isPlaying by remember { mutableStateOf(false) }
     var durationMs by remember { mutableIntStateOf(0) }
     var positionMs by remember { mutableIntStateOf(0) }
+    var speed by remember { mutableStateOf(1f) }
+    var mode by remember { mutableStateOf(PlayMode.ORDER) }
+    // 监听器里读到的永远是最新的模式和列表（否则切了模式、播完还按旧的来）
+    val modeState = rememberUpdatedState(mode)
+    val siblingsState = rememberUpdatedState(siblings)
+    val selectState = rememberUpdatedState(onSelectItem)
 
     // 播放地址：已下载用本地文件，否则用远程链接。下载完成时地址会变，
     // 重新准备播放器，下次播放就走离线文件。
     val source = downloads.playSource(item)
 
-    LaunchedEffect(source) {
-        isPlaying = false
-        positionMs = 0
+    fun applySpeed() {
+        if (speed == 1f) return
+        try {
+            player.playbackParams = player.playbackParams.setSpeed(speed)
+        } catch (_: Exception) {
+            // 没准备好时调倍速会抛异常，等准备好再调
+        }
+    }
+
+    fun nextTrack() {
+        val list = siblingsState.value
+        if (list.size <= 1) {
+            // 只有一首：回到开头重播
+            try {
+                player.seekTo(0)
+                player.start()
+            } catch (_: Exception) {
+            }
+            isPlaying = true
+            positionMs = 0
+            status = "正在播放"
+            return
+        }
+        val idx = list.indexOfFirst { it.id == item.id }
+        val next = when (modeState.value) {
+            PlayMode.SHUFFLE -> list.filter { it.id != item.id }.random()
+            else -> list[(idx + 1).mod(list.size)]
+        }
+        selectState.value(next.id)
+    }
+
+    fun onTrackEnded() {
+        when (modeState.value) {
+            PlayMode.SINGLE -> {
+                try {
+                    player.seekTo(0)
+                    player.start()
+                    isPlaying = true
+                    positionMs = 0
+                    status = "正在播放"
+                } catch (_: Exception) {
+                    isPlaying = false
+                    positionMs = 0
+                    status = "已播完"
+                }
+            }
+            PlayMode.ORDER -> {
+                val list = siblingsState.value
+                val idx = list.indexOfFirst { it.id == item.id }
+                if (idx >= 0 && idx < list.size - 1) {
+                    selectState.value(list[idx + 1].id)
+                } else {
+                    isPlaying = false
+                    positionMs = 0
+                    status = "已播完"
+                }
+            }
+            PlayMode.LOOP_ALL, PlayMode.SHUFFLE -> nextTrack()
+        }
+    }
+
+    fun prepare(autoStart: Boolean) {
+        status = "准备中…"
         try {
             player.reset()
             player.setDataSource(source)
             player.setOnPreparedListener {
                 durationMs = it.duration
                 status = if (downloads.isDownloaded(item)) "已就绪（离线播放）" else "已就绪"
+                applySpeed()
+                if (autoStart) {
+                    try {
+                        player.start()
+                        isPlaying = true
+                        status = "正在播放"
+                    } catch (_: Exception) {
+                        status = "播放失败，请重试"
+                        reportMessage("audio-playback", item.title)
+                    }
+                }
             }
             player.setOnErrorListener { _, _, _ ->
                 status = "加载失败，请检查网络"
@@ -278,16 +381,19 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
                 reportMessage("audio-playback", item.title)
                 true
             }
-            player.setOnCompletionListener {
-                isPlaying = false
-                positionMs = 0
-                status = "已播完"
-            }
+            player.setOnCompletionListener { onTrackEnded() }
             player.prepareAsync()
         } catch (_: Exception) {
             status = "加载失败，请检查网络"
             reportMessage("audio-playback", item.title)
         }
+    }
+
+    LaunchedEffect(source) {
+        isPlaying = false
+        positionMs = 0
+        speed = 1f
+        prepare(false)
     }
 
     DisposableEffect(Unit) {
@@ -336,6 +442,11 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
         Spacer(modifier = Modifier.height(28.dp))
         IconButton(
             onClick = {
+                if (status == "加载失败，请检查网络" || status == "播放失败，请重试") {
+                    // 准备失败时再点一次就是重试：重新准备，准备好自动开始播
+                    prepare(true)
+                    return@IconButton
+                }
                 // 播放按钮只在“能播”的状态下起作用：就绪、播完、已暂停，以及正在播放时点暂停。
                 // 注意：暂停后状态是“已暂停”，以前漏了这个状态，点播放没反应。
                 if (status == "已就绪" || status == "已就绪（离线播放）" || status == "已播完" || status == "已暂停" || isPlaying) {
@@ -377,6 +488,22 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
                 tint = Color.White,
                 modifier = Modifier.size(40.dp)
             )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            OutlinedButton(onClick = {
+                val idx = SPEEDS.indexOf(speed)
+                speed = SPEEDS[(idx + 1).mod(SPEEDS.size)]
+                applySpeed()
+            }) { Text("倍速 ${speedLabel(speed)}", fontSize = 14.sp) }
+            OutlinedButton(onClick = {
+                val values = PlayMode.values()
+                mode = values[(values.indexOf(mode) + 1).mod(values.size)]
+            }) { Text("模式：${mode.label}", fontSize = 14.sp) }
+            OutlinedButton(onClick = { nextTrack() }) { Text("下一首", fontSize = 14.sp) }
         }
         Spacer(modifier = Modifier.height(20.dp))
         Slider(

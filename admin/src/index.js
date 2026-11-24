@@ -51,6 +51,23 @@ function keyFromFileUrl(u) {
   const k = decodeURIComponent(u.split("/file/")[1] || "");
   return /^media\/[A-Za-z0-9._-]+$/.test(k) ? k : "";
 }
+/** 解析 Range 头（bytes=A-B / bytes=A- / bytes=-N），返回 {offset, length, start, end}；越界返回 {invalid: true}；没有 Range 返回 null。 */
+function parseRange(header, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || "").trim());
+  if (!m) return null;
+  let start = m[1] === "" ? null : parseInt(m[1], 10);
+  let end = m[2] === "" ? null : parseInt(m[2], 10);
+  if (start === null && end === null) return null;
+  if (start === null) {
+    start = Math.max(0, size - end);
+    end = size - 1;
+  } else {
+    if (start >= size) return { invalid: true };
+    end = (end === null || end >= size) ? size - 1 : end;
+  }
+  if (start > end) return { invalid: true };
+  return { offset: start, length: end - start + 1, start, end };
+}
 
 // ---- 目录读写（R2） ----
 async function readCatalog(env) {
@@ -138,24 +155,41 @@ export default {
     }
 
     // ---- 公开：播放 / 下载文件（走 Worker 代理，R2 流出免费；支持断点续传） ----
-    if (path.startsWith("/file/") && request.method === "GET") {
+    // 注意：R2 的 get() 不接受原始 Range 头字符串（会抛错、整个 Worker 报 500），
+    // 必须自己解析成 {offset, length} 再传。播放器（MediaPlayer）和下载器都会发 Range 请求。
+    if (path.startsWith("/file/") && (request.method === "GET" || request.method === "HEAD")) {
       const key = decodeURIComponent(path.slice("/file/".length));
       if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("文件不存在", 404);
-      const range = request.headers.get("Range");
-      const obj = range
-        ? await env.CHENGGUANG_BUCKET.get(key, { range })
-        : await env.CHENGGUANG_BUCKET.get(key);
-      if (!obj) return err("文件不存在", 404);
+      const head = await env.CHENGGUANG_BUCKET.head(key);
+      if (!head) return err("文件不存在", 404);
+      const size = head.size;
+      const range = parseRange(request.headers.get("Range"), size);
+      if (range && range.invalid) {
+        return new Response(null, {
+          status: 416,
+          headers: { "Content-Range": "bytes */" + size, "Accept-Ranges": "bytes", "Access-Control-Allow-Origin": "*" },
+        });
+      }
       const headers = new Headers();
-      obj.writeHttpMetadata(headers);
-      headers.set("etag", obj.httpEtag);
+      head.writeHttpMetadata(headers);
+      headers.set("etag", head.httpEtag);
       headers.set("Cache-Control", "public, max-age=31536000, immutable");
       headers.set("Access-Control-Allow-Origin", "*");
-      if (obj.range) {
-        const end = obj.range.offset + obj.range.length - 1;
-        headers.set("Content-Range", "bytes " + obj.range.offset + "-" + end + "/" + obj.size);
+      headers.set("Accept-Ranges", "bytes");
+      if (request.method === "HEAD") {
+        headers.set("Content-Length", String(size));
+        return new Response(null, { headers });
+      }
+      const obj = range
+        ? await env.CHENGGUANG_BUCKET.get(key, { range: { offset: range.offset, length: range.length } })
+        : await env.CHENGGUANG_BUCKET.get(key);
+      if (!obj) return err("文件不存在", 404);
+      if (range) {
+        headers.set("Content-Range", "bytes " + range.start + "-" + range.end + "/" + size);
+        headers.set("Content-Length", String(range.length));
         return new Response(obj.body, { status: 206, headers });
       }
+      headers.set("Content-Length", String(size));
       return new Response(obj.body, { headers });
     }
 
