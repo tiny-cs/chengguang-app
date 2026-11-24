@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 读书器 TTS 听书（Phase 2 第 1 块）。
@@ -100,8 +101,10 @@ object TtsReader {
     const val ACTION_TTS_TOGGLE = "com.maihe.chengguang.ACTION_TTS_TOGGLE"
     const val ACTION_TTS_STOP = "com.maihe.chengguang.ACTION_TTS_STOP"
 
-    val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
-    val SPEED_LABELS = listOf("0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x")
+    // 语速：滑杆 0.5x–4.0x，以 0.1 为一格（显示一位小数）
+    const val SPEED_MIN = 0.5f
+    const val SPEED_MAX = 4f
+    const val SPEED_STEP = 0.1f
     val SLEEP_OPTIONS = listOf(0, 15, 30, 60)
     val SLEEP_LABELS = listOf("不限", "15分钟", "30分钟", "60分钟")
 
@@ -146,8 +149,7 @@ object TtsReader {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var sleepRunnable: Runnable? = null
 
-    fun speedLabel(): String =
-        SPEED_LABELS[SPEEDS.indexOf(speed).coerceAtLeast(0)]
+    fun speedLabel(): String = "%.1fx".format(Locale.US, speed)
 
     fun sleepLabel(): String =
         if (sleepMinutes <= 0) "定时：不限" else "定时：${sleepMinutes}分钟"
@@ -158,14 +160,18 @@ object TtsReader {
         if (prefsLoaded) return
         prefsLoaded = true
         val prefs = context.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
-        speed = prefs.getFloat("tts_speed", 1f).let { if (it in SPEEDS) it else 1f }
+        speed = normalizeSpeed(prefs.getFloat("tts_speed", 1f))
         voiceName = prefs.getString("tts_voice_name", "") ?: ""
         sleepMinutes = prefs.getInt("tts_sleep_minutes", 0).let { if (it in SLEEP_OPTIONS) it else 0 }
     }
 
+    /** 语速归一化到 0.1 的格子并夹在 0.5x–4.0x 内（旧档位 0.75/1.25 也会落到最近的格子上）。 */
+    private fun normalizeSpeed(value: Float): Float =
+        ((value / SPEED_STEP).roundToInt() * SPEED_STEP).coerceIn(SPEED_MIN, SPEED_MAX)
+
     // 注意：不能叫 setSpeed——var speed 自带的 setter 已经占了 setSpeed(F)V 这个 JVM 签名，同名函数会编译冲突
     fun updateSpeed(value: Float) {
-        val v = if (value in SPEEDS) value else 1f
+        val v = normalizeSpeed(value)
         speed = v
         appContext?.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
             ?.edit()?.putFloat("tts_speed", v)?.apply()

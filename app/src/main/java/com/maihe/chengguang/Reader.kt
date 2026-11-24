@@ -29,6 +29,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -1019,21 +1020,41 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
         )
     }
 
-    // 听书：语速选择
+    // 听书：语速选择（滑杆 0.5x–4.0x，0.1 一格；松手才生效，拖动时不反复重读）
     if (showTtsSpeed) {
+        var sliderSpeed by remember { mutableStateOf(TtsReader.speed) }
         AlertDialog(
             onDismissRequest = { showTtsSpeed = false },
             confirmButton = {
-                TextButton(onClick = { showTtsSpeed = false }) { Text("完成") }
+                TextButton(onClick = {
+                    TtsReader.updateSpeed(sliderSpeed)
+                    showTtsSpeed = false
+                }) { Text("完成") }
             },
             title = { Text("语速") },
             text = {
-                OptionRow(
-                    label = "语速",
-                    options = TtsReader.SPEED_LABELS,
-                    selected = TtsReader.SPEEDS.indexOf(TtsReader.speed).coerceAtLeast(0),
-                    onSelect = { TtsReader.updateSpeed(TtsReader.SPEEDS[it]) }
-                )
+                Column {
+                    Text(
+                        "当前 ${"%.1fx".format(java.util.Locale.US, sliderSpeed)}",
+                        fontSize = 16.sp, fontWeight = FontWeight.Bold
+                    )
+                    Slider(
+                        value = sliderSpeed,
+                        onValueChange = { sliderSpeed = it },
+                        onValueChangeFinished = { TtsReader.updateSpeed(sliderSpeed) },
+                        valueRange = TtsReader.SPEED_MIN..TtsReader.SPEED_MAX,
+                        // 0.5–4.0 以 0.1 为一格是 35 段，中间 34 个停靠点
+                        steps = 34,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("0.5x", fontSize = 12.sp, color = theme.muted)
+                        Text("4.0x", fontSize = 12.sp, color = theme.muted)
+                    }
+                }
             }
         )
     }
