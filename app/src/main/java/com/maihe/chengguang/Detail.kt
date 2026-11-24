@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -71,36 +70,7 @@ fun DetailScreen(
 
 @Composable
 fun ReadingDetail(item: CatalogItem) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp)
-    ) {
-        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(item.category, fontSize = 13.sp, color = Color.Gray)
-        if (item.description.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(item.description, fontSize = 15.sp, color = Color.DarkGray)
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-        Divider()
-        Spacer(modifier = Modifier.height(16.dp))
-        val body = item.content.ifEmpty { "（正文待管理员上传）" }
-        body.split("\n").forEach { paragraph ->
-            if (paragraph.isBlank()) {
-                Spacer(modifier = Modifier.height(10.dp))
-            } else {
-                Text(paragraph, fontSize = 17.sp, lineHeight = 28.sp)
-                Spacer(modifier = Modifier.height(10.dp))
-            }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        Divider()
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("正文已随 App 自带，离线也能读，无需下载。", fontSize = 12.sp, color = Color.Gray)
-    }
+    ReaderScreen(item)
 }
 
 private fun formatMs(ms: Int): String {
