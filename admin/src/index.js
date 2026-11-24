@@ -870,18 +870,34 @@ async function uploadChunked(title, category, file) {
   var init = await initR.json();
   if (!init.ok) { fail(init.error || "创建上传失败"); return; }
   totalParts = Math.ceil(file.size / init.partSize);
-  var parts = [];
+  // 4 块并行传：以前是一块一块等，慢网下一块的来回等待占了不少时间；
+  // 并行后同一时间有 4 块在传。服务端按 partNumber 排序合并，乱序也没事。
+  var parts = new Array(totalParts);
+  var doneCount = 0;
+  var CONCURRENCY = 4;
+  async function uploadOnePart(i) {
+    var chunk = file.slice(i * init.partSize, (i + 1) * init.partSize);
+    var r = await fetch("/api/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
+      + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
+      { method: "POST", body: chunk });
+    var d = await r.json();
+    if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
+    parts[i] = { partNumber: d.partNumber, etag: d.etag };
+    doneCount++;
+    setProg(doneCount, totalParts);
+  }
   try {
-    for (var i = 0; i < totalParts; i++) {
-      var chunk = file.slice(i * init.partSize, (i + 1) * init.partSize);
-      var r = await fetch("/api/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
-        + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
-        { method: "POST", body: chunk });
-      var d = await r.json();
-      if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
-      parts.push({ partNumber: d.partNumber, etag: d.etag });
-      setProg(i + 1, totalParts);
+    var next = 0;
+    var workers = [];
+    for (var w = 0; w < Math.min(CONCURRENCY, totalParts); w++) {
+      workers.push((async function () {
+        while (next < totalParts) {
+          var i = next++;
+          await uploadOnePart(i);
+        }
+      })());
     }
+    await Promise.all(workers);
   } catch (e) {
     try { await fetch("/api/upload/abort", { method: "POST",
       headers: { "Content-Type": "application/json" },
