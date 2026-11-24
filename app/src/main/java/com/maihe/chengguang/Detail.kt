@@ -97,13 +97,18 @@ fun DetailScreen(
     when (item.type) {
         "audio" -> AudioDetail(item, downloads, siblings, onSelectItem, onViewPdf)
         "video" -> VideoDetail(item, downloads, onViewPdf, onFullscreenChange, siblings, onSelectItem)
-        else -> ReadingDetail(item, bookshelf, vocab)
+        else -> ReadingDetail(item, bookshelf, vocab, onViewPdf)
     }
 }
 
 @Composable
-fun ReadingDetail(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: VocabStore? = null) {
-    ReaderScreen(item, bookshelf, vocab)
+fun ReadingDetail(
+    item: CatalogItem,
+    bookshelf: BookshelfStore? = null,
+    vocab: VocabStore? = null,
+    onViewPdf: (String, String) -> Unit = { _, _ -> }
+) {
+    ReaderScreen(item, bookshelf, vocab, onViewPdf)
 }
 
 private fun formatMs(ms: Int): String {

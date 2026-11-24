@@ -328,7 +328,12 @@ private fun highlightTtsSentence(paragraph: String, sentIdx: Int): AnnotatedStri
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: VocabStore? = null) {
+fun ReaderScreen(
+    item: CatalogItem,
+    bookshelf: BookshelfStore? = null,
+    vocab: VocabStore? = null,
+    onViewPdf: (String, String) -> Unit = { _, _ -> }
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -561,6 +566,8 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
      * 不能直接调 startReading：同一本书暂停中时它会 resume 旧位置、忽略新段落；
      * 正在读时直接调会把新句子追加到队列尾，和正在读的叠起来。 */
     fun startReadingFrom(paraIdx: Int) {
+        // 没正文不读：扫描版书点段落也不能读出“（正文待管理员上传）”占位
+        if (item.content.isBlank()) return
         if (TtsReader.isActive) TtsReader.stop()
         TtsReader.startReading(context, item, paragraphs, paraIdx)
     }
@@ -721,22 +728,25 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                         contentPadding = PaddingValues(horizontal = 10.dp)
                     ) { Text("查词", fontSize = 13.sp) }
                 }
-                OutlinedButton(
-                    onClick = {
-                        if (ttsActive) {
-                            TtsReader.togglePause()
-                        } else {
-                            TtsReader.startReading(context, item, paragraphs, currentParaIdx)
-                        }
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp)
-                ) {
-                    Text(
-                        if (ttsActive) {
-                            if (TtsReader.isReading) "听书中" else "继续听"
-                        } else "听书",
-                        fontSize = 13.sp
-                    )
+                // 没正文不显示听书：空内容读出来只会是“（正文待管理员上传）”占位
+                if (item.content.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = {
+                            if (ttsActive) {
+                                TtsReader.togglePause()
+                            } else {
+                                TtsReader.startReading(context, item, paragraphs, currentParaIdx)
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp)
+                    ) {
+                        Text(
+                            if (ttsActive) {
+                                if (TtsReader.isReading) "听书中" else "继续听"
+                            } else "听书",
+                            fontSize = 13.sp
+                        )
+                    }
                 }
                 // 加入书架：只对属灵书籍有效，诗歌不进书架
                 if (item.type == "book" && bookshelf != null) {
@@ -749,6 +759,21 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                     ) {
                         Text(if (onShelf) "已在书架" else "加入书架", fontSize = 13.sp)
                     }
+                }
+            }
+
+            // 原书 PDF（扫描版）：有 pdfUrl 就显示，点开内置 PDF 阅读器；
+            // 在工具栏下方、正文之外，滚动和仿真两种模式都看得到
+            if (item.pdfUrl.isNotBlank()) {
+                OutlinedButton(
+                    onClick = { onViewPdf(item.pdfUrl, item.title) },
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        if (item.content.isBlank()) "查看原书 PDF（扫描版）" else "查看原书 PDF",
+                        fontSize = 13.sp
+                    )
                 }
             }
 

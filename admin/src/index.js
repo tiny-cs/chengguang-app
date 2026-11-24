@@ -694,6 +694,12 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
         <div id="docImportMsg" class="muted" style="margin-top:4px"></div>
         <p class="muted">老格式 .doc 不支持，请在 Word 里另存为 .docx 再传。PDF 是扫描图片的提不出文字，请用文字版 PDF。EPUB 按章节顺序提正文，超过 100 万字会自动截断到 100 万字。TXT 会自动识别 UTF-8 / GBK 编码。</p>
       </div>
+      <div id="bookBlock" style="display:none">
+        <label>原书 PDF（扫描版，可选）：没有文字层的扫描版直接传这里，App 里点“查看原书 PDF”打开看原书；以后有了文字版再重新做</label>
+        <input type="file" id="bookPdfFile" accept=".pdf">
+        <div id="bookPdfNow" class="muted" style="margin-top:4px"></div>
+        <button type="button" class="ghost" id="delBookPdfBtn" style="display:none;margin-top:6px" onclick="delBookPdf()">删除已有原书 PDF</button>
+      </div>
     </div>
     <div id="worshipBlock" style="display:none">
       <label>音频文件（歌）：MP3 等；不传就是纯文字诗歌</label>
@@ -740,9 +746,11 @@ function onCategory() {
   var c = document.getElementById("category").value;
   var isMedia = (c === "主日信息" || c === "灵修信息" || c === "专题讲座");
   var isWorship = (c === "敬拜赞美");
+  var isBook = (c === "属灵书籍");
   document.getElementById("fileBlock").style.display = isMedia ? "block" : "none";
   document.getElementById("textBlock").style.display = isMedia ? "none" : "block";
   document.getElementById("worshipBlock").style.display = isWorship ? "block" : "none";
+  document.getElementById("bookBlock").style.display = isBook ? "block" : "none";
   document.getElementById("contentLabel").textContent = isWorship ? "歌词（文字格式的歌谱）" : "正文（书籍 / 诗歌）";
   // 切栏目时清掉藏起来的那组文件选择，免得旧文件被误传到新栏目里
   if (isWorship) {
@@ -751,6 +759,14 @@ function onCategory() {
   } else {
     document.getElementById("songFile").value = "";
     document.getElementById("sheetFile").value = "";
+  }
+  if (!isBook) {
+    document.getElementById("bookPdfFile").value = "";
+  }
+  // 离开媒体栏目时也清掉音频/视频和讲章的选择，免得旧文件被误传到新栏目里
+  if (!isMedia) {
+    document.getElementById("file").value = "";
+    document.getElementById("slidesFile").value = "";
   }
 }
 async function login() {
@@ -1033,6 +1049,10 @@ function resetForm() {
   if (sheetInput) sheetInput.value = "";
   document.getElementById("sheetNow").textContent = "";
   document.getElementById("delSheetBtn").style.display = "none";
+  var bookPdfInput = document.getElementById("bookPdfFile");
+  if (bookPdfInput) bookPdfInput.value = "";
+  document.getElementById("bookPdfNow").textContent = "";
+  document.getElementById("delBookPdfBtn").style.display = "none";
   showMsg("", "msg2");
 }
 async function editItem(id) {
@@ -1073,6 +1093,18 @@ async function editItem(id) {
     document.getElementById("sheetNow").textContent = "";
     document.getElementById("delSheetBtn").style.display = "none";
   }
+  if (it.category === "属灵书籍") {
+    if (it.pdfUrl) {
+      document.getElementById("bookPdfNow").textContent = "已有原书 PDF：" + it.pdfUrl.split("/").pop();
+      document.getElementById("delBookPdfBtn").style.display = "inline-block";
+    } else {
+      document.getElementById("bookPdfNow").textContent = "";
+      document.getElementById("delBookPdfBtn").style.display = "none";
+    }
+  } else {
+    document.getElementById("bookPdfNow").textContent = "";
+    document.getElementById("delBookPdfBtn").style.display = "none";
+  }
   window.scrollTo(0, 0);
 }
 async function save() {
@@ -1092,13 +1124,18 @@ async function save() {
     if (!d.ok) { showMsg(d.error || "保存失败", "msg2"); return; }
     var sf = document.getElementById("slidesFile").files[0];
     if (sf) {
-      var okS = await uploadAttachment(editId, sf);
-      if (!okS) return;
+      var errS = await uploadAttachment(editId, sf);
+      if (errS) return;
     }
     var sh = document.getElementById("sheetFile").files[0];
     if (sh) {
       var sheetErr = await uploadSheet(editId, sh);
       if (sheetErr) { showMsg(sheetErr, "msg2"); return; }
+    }
+    var bf = document.getElementById("bookPdfFile").files[0];
+    if (bf) {
+      var errB = await uploadAttachment(editId, bf, "原书 PDF");
+      if (errB) return;
     }
     showMsg("已保存", "msg2"); resetForm(); load(); return;
   }
@@ -1135,6 +1172,17 @@ async function save() {
     if (sheetErr2) {
       resetForm(); load();
       showMsg("歌已保存，但歌谱没传上去：" + sheetErr2 + "。点编辑可以再传谱图。", "msg2");
+      return;
+    }
+  }
+  // 原书 PDF 等条目建好之后再传（要 itemId）；书已保存，PDF 没传上去也不丢条目，
+  // 报错后提示用户点编辑再传
+  var bf2 = document.getElementById("bookPdfFile").files[0];
+  if (bf2) {
+    var errB2 = await uploadAttachment(d2.item.id, bf2, "原书 PDF");
+    if (errB2) {
+      resetForm(); load();
+      showMsg("书已保存，但原书 PDF 没传上去：" + errB2 + "。点编辑可以再传。", "msg2");
       return;
     }
   }
@@ -1256,20 +1304,29 @@ async function uploadChunked(title, category, file) {
   progText.textContent = "";
   var sf2 = document.getElementById("slidesFile").files[0];
   if (sf2) {
-    var okS2 = await uploadAttachment(cd.item.id, sf2);
-    if (!okS2) return;
+    var errS2 = await uploadAttachment(cd.item.id, sf2);
+    if (errS2) return;
   }
   showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
 }
-async function uploadAttachment(itemId, file) {
+// 附件上传（讲章 / 原书 PDF 共用）：成功返回 null，失败返回错误文字（已显示过，调用方别再盖掉）
+async function uploadAttachment(itemId, file, label) {
+  label = label || "讲章";
   var fd = new FormData();
   fd.append("itemId", itemId);
   fd.append("file", file);
-  showMsg("正在上传讲章，请稍等…", "msg2");
-  var r = await fetch("/api/upload/attachment", { method: "POST", body: fd });
-  var d = await r.json();
-  if (!d.ok) { showMsg(d.error || "讲章上传失败", "msg2"); return false; }
-  return true;
+  showMsg("正在上传" + label + "，请稍等…", "msg2");
+  var d;
+  try {
+    var r = await fetch("/api/upload/attachment", { method: "POST", body: fd });
+    d = await r.json();
+  } catch (e) {
+    var netErr = label + "上传失败：网络断开了，请检查网络后重试";
+    showMsg(netErr, "msg2");
+    return netErr;
+  }
+  if (!d.ok) { var errText = d.error || label + "上传失败"; showMsg(errText, "msg2"); return errText; }
+  return null;
 }
 // 歌谱图片：条目建好之后再传（要 itemId）。成功返回 ""，失败返回中文错误（调用方显示出来，不静默丢掉）。
 async function uploadSheet(itemId, file) {
@@ -1302,6 +1359,17 @@ async function delSlides() {
   if (!d.ok) { alert(d.error || "删除失败"); return; }
   document.getElementById("slidesNow").textContent = "";
   document.getElementById("delSlidesBtn").style.display = "none";
+  load();
+}
+async function delBookPdf() {
+  var editId = document.getElementById("editId").value;
+  if (!editId) return;
+  if (!confirm("确定删除这本书的原书 PDF 吗？")) return;
+  var r = await fetch("/api/items/" + encodeURIComponent(editId) + "/attachment", { method: "DELETE" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "删除失败"); return; }
+  document.getElementById("bookPdfNow").textContent = "";
+  document.getElementById("delBookPdfBtn").style.display = "none";
   load();
 }
 async function delItem(id, title) {
