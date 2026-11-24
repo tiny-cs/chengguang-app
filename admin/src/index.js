@@ -8,6 +8,15 @@
 
 const CATEGORIES = ["属灵书籍", "生命诗歌", "主日信息", "灵修信息", "专题讲座"];
 const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "主日信息": "audio", "灵修信息": "audio", "专题讲座": "audio" };
+// 媒体栏目（主日信息 / 灵修信息 / 专题讲座）不按栏目定类型，按文件后缀定：
+// mp3、m4a 等是音频，mp4、mov 等是视频——同一个栏目里音频视频都能传，
+// App 按每条记录的 type 显示音频页或视频页，下载、讲章都一样有。
+const MEDIA_CATEGORIES = ["主日信息", "灵修信息", "专题讲座"];
+function mediaTypeForExt(ext) {
+  if (AUDIO_EXTS.includes(ext)) return "audio";
+  if (VIDEO_EXTS.includes(ext)) return "video";
+  return "";
+}
 const TYPE_PREFIX = { book: "b", poem: "p", audio: "a", video: "v" };
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // 旧的单次上传路径：Workers 免费版单次请求体上限 100MB
 const PART_SIZE = 10 * 1024 * 1024; // 分块上传：每块 10MB（R2 要求除最后一块外每块 >= 5MB）
@@ -266,11 +275,11 @@ export default {
       const fileSize = Number(body.fileSize);
       if (!title) return err("请填写标题");
       if (!CATEGORIES.includes(category)) return err("栏目不对");
-      const type = TYPE_BY_CATEGORY[category];
-      if (type !== "audio" && type !== "video") return err("这个栏目不支持分块上传");
+      const baseType = TYPE_BY_CATEGORY[category];
+      if (baseType !== "audio" && baseType !== "video") return err("这个栏目不支持分块上传");
       const ext = extOf(filename);
-      const allowed = type === "audio" ? AUDIO_EXTS : VIDEO_EXTS;
-      if (!allowed.includes(ext)) return err("不支持的文件格式：请传 " + allowed.join("、"));
+      const type = mediaTypeForExt(ext);
+      if (!type) return err("不支持的文件格式：请传音频（" + AUDIO_EXTS.join("、") + "）或视频（" + VIDEO_EXTS.join("、") + "）");
       if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
       if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type) + "：请先压缩或剪短");
       if (Math.ceil(fileSize / PART_SIZE) > 10000) return err("文件太大");
@@ -323,11 +332,11 @@ export default {
       if (!parts.length) return err("没有任何分块");
       if (!title) return err("请填写标题");
       if (!CATEGORIES.includes(category)) return err("栏目不对");
-      const type = TYPE_BY_CATEGORY[category];
-      if (type !== "audio" && type !== "video") return err("这个栏目不支持分块上传");
+      const baseType = TYPE_BY_CATEGORY[category];
+      if (baseType !== "audio" && baseType !== "video") return err("这个栏目不支持分块上传");
       const ext = extOf(key);
-      const allowed = type === "audio" ? AUDIO_EXTS : VIDEO_EXTS;
-      if (!allowed.includes(ext)) return err("文件格式不对");
+      const type = mediaTypeForExt(ext);
+      if (!type) return err("文件格式不对");
       if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
       if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type));
       const sorted = parts
@@ -406,7 +415,14 @@ export default {
       const file = form.get("file");
       if (!title) return err("请填写标题");
       if (!CATEGORIES.includes(category)) return err("栏目不对");
-      const type = TYPE_BY_CATEGORY[category];
+      const baseType = TYPE_BY_CATEGORY[category];
+      // 媒体栏目按文件后缀定类型（音频还是视频），先定类型再生成 id（id 前缀 a/v 跟类型走）
+      let type = baseType;
+      if (MEDIA_CATEGORIES.includes(category)) {
+        if (!file || file.size === 0) return err("音频/视频请先选一个文件");
+        type = mediaTypeForExt(extOf(file.name));
+        if (!type) return err("不支持的文件格式：请传音频（" + AUDIO_EXTS.join("、") + "）或视频（" + VIDEO_EXTS.join("、") + "）");
+      }
       const now = new Date().toISOString();
       const item = {
         id: newId(type), title, category, type, url: "", pdfUrl: "", duration,
@@ -458,7 +474,14 @@ export default {
       if (body.title !== undefined) item.title = String(body.title).trim() || item.title;
       if (body.category !== undefined && CATEGORIES.includes(body.category)) {
         item.category = body.category;
-        item.type = TYPE_BY_CATEGORY[body.category];
+        const newBase = TYPE_BY_CATEGORY[body.category];
+        if (newBase === "book" || newBase === "poem") {
+          item.type = newBase;
+        } else if (item.url) {
+          // 媒体栏目：按已有文件的后缀定类型，免得把视频条目改栏目时错变成音频
+          const t = mediaTypeForExt(extOf(item.url));
+          if (t) item.type = t;
+        }
       }
       if (body.description !== undefined) item.description = String(body.description);
       if (body.duration !== undefined) item.duration = String(body.duration);
@@ -592,7 +615,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
       </div>
     </div>
     <div id="fileBlock" style="display:none">
-      <label>音频文件 *（不超过 500MB；大文件自动分块上传）</label>
+      <label>音频或视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
       <input type="file" id="file">
       <label>讲章文件（可选）：PDF 最好；PPT 请先在 PowerPoint / WPS 里另存为 PDF 再传，直接传 PPT 的话 App 里是在线预览，要联网</label>
       <input type="file" id="slidesFile" accept=".pdf,.ppt,.pptx">
@@ -804,7 +827,7 @@ async function save() {
   var f = document.getElementById("file").files[0];
   var cat = document.getElementById("category").value;
   var isMedia = (cat === "主日信息" || cat === "灵修信息" || cat === "专题讲座");
-  // 音频一律走分块上传：10MB 一块顺序上传，上限 500MB
+  // 音频/视频一律走分块上传：10MB 一块顺序上传，音频上限 500MB、视频上限 2GB
   if (isMedia && f) {
     await uploadChunked(title, cat, f);
     return;
