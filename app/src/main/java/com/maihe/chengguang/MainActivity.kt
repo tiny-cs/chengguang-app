@@ -66,16 +66,12 @@ import kotlinx.coroutines.withContext
 private val Navy = Color(0xFF1F2A44)
 private val Gold = Color(0xFF9A7B2D)
 private val Paper = Color(0xFFFAF7F0)
-private val Teal = Color(0xFF2E7D6B)
-private val Brick = Color(0xFF8E4A2F)
 private val Purple = Color(0xFF6A4C93)
 private val Leaf = Color(0xFF4C8C4A)
 
 fun categoryColor(category: String): Color = when (category) {
     "属灵书籍" -> Gold
     "生命诗歌" -> Navy
-    "讲道音频" -> Teal
-    "讲道视频" -> Brick
     "主日信息" -> Purple
     "灵修信息" -> Leaf
     else -> Navy
@@ -294,8 +290,6 @@ fun CategoryCard(name: String, count: Int, modifier: Modifier = Modifier, onClic
                     text = when (name) {
                         "属灵书籍" -> "书"
                         "生命诗歌" -> "诗"
-                        "讲道音频" -> "音"
-                        "讲道视频" -> "视"
                         "主日信息" -> "主"
                         "灵修信息" -> "灵"
                         else -> "城"
@@ -545,7 +539,7 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("城光是属灵内容 App：属灵书籍、生命诗歌、讲道音频、讲道视频、主日信息、灵修信息。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
+                    Text("城光是属灵内容 App：属灵书籍、生命诗歌、主日信息、灵修信息。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("版本：${BuildConfig.VERSION_NAME}（远程目录版）", fontSize = 13.sp, color = Color.Gray)
                 }

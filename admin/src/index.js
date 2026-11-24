@@ -6,8 +6,8 @@
 // 以后“指定人上传、管理员审核”就是：上传的人写 status=pending，
 // 管理员在后台点通过改成 published；App 只拉 published 的。
 
-const CATEGORIES = ["属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息"];
-const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "讲道音频": "audio", "讲道视频": "video", "主日信息": "audio", "灵修信息": "audio" };
+const CATEGORIES = ["属灵书籍", "生命诗歌", "主日信息", "灵修信息"];
+const TYPE_BY_CATEGORY = { "属灵书籍": "book", "生命诗歌": "poem", "主日信息": "audio", "灵修信息": "audio" };
 const TYPE_PREFIX = { book: "b", poem: "p", audio: "a", video: "v" };
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // 旧的单次上传路径：Workers 免费版单次请求体上限 100MB
 const PART_SIZE = 10 * 1024 * 1024; // 分块上传：每块 10MB（R2 要求除最后一块外每块 >= 5MB）
@@ -16,11 +16,14 @@ const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024; // 视频分块上传上限 2GB
 const AUDIO_EXTS = ["mp3", "m4a", "wav", "ogg", "aac", "flac"];
 const VIDEO_EXTS = ["mp4", "mov", "webm", "mkv", "m4v"];
 const CATALOG_KEY = "catalog.json";
+const SLIDES_EXTS = ["pdf", "ppt", "pptx"]; // 讲章附件：PDF 优先，也收 PPT/PPTX（App 里在线预览）
+const MAX_SLIDES_BYTES = 100 * 1024 * 1024; // 讲章单次上传上限 100MB
+const SLIDES_CONTENT_TYPE = { pdf: "application/pdf", ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
 const FEEDBACK_KEY = "feedback.json"; // 读者建议：App“给开发者建议”提交的，只管理员能看
 const MAX_FEEDBACK_CHARS = 2000;
 
 // 首次部署时自动写入的示例目录（与 App 内置 catalog.json 同源，见 build 时注入）。
-const SEED_CATALOG = [{"category": "属灵书籍", "content": "认识基督，不是一套道理，乃是一个人。\n\n我们越认识祂，就越认识自己；越亲近祂，就越有力量走前面的路。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "认识基督，是属灵生命的起头，也是每天的功课。", "duration": "", "id": "b1", "size": "", "title": "认识基督", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "真实的属灵，不在乎人看得见的热心，乃在乎里面有没有基督的成分。\n\n生命长大是一天一天的事，急不得，也假不得。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "属灵的事不在外面，乃在里面；不在知识，乃在生命。", "duration": "", "id": "b2", "size": "", "title": "属灵的实际", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "环境来的时候，人总想问为什么；等走过去了，才看见那是恩典的手。\n\n经历不是白白得来的，是在顺服里一点一点积攒的。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "每一处环境，都是量给我们的功课。", "duration": "", "id": "b3", "size": "", "title": "生命的经历", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "祷告的起头很简单：停下来，把心里的话告诉主。\n\n天天这样操练，里面就渐渐有了安息和亮光。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "祷告不是仪式，乃是与主交通的生活。", "duration": "", "id": "b4", "size": "", "title": "祷告的操练", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "清晨的光照进窗来，\n我的心向你歌唱；\n荣耀、尊贵、权柄、能力，\n都归于坐宝座的羔羊。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "清晨醒来，第一句就是赞美。", "duration": "", "id": "p1", "size": "", "title": "荣耀归于主", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "长阔高深的爱，\n把我这个人全然包围；\n在软弱中祂扶持，\n在黑夜里祂是光。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "祂的爱，量不尽，也说不完。", "duration": "", "id": "p2", "size": "", "title": "主爱长阔高深", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "羔羊无论往哪里去，\n我都愿意跟随；\n路虽窄，心却安，\n因为祂与我同行。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "无论往哪里去，都跟随羔羊的脚踪。", "duration": "", "id": "p3", "size": "", "title": "跟随羔羊", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "一座城立在山上，\n光从城里透出来；\n愿这光照亮四方，\n叫人看见就归荣耀给父。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "城造在山上，是不能隐藏的。", "duration": "", "id": "p4", "size": "", "title": "城上的光", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "信心不是感觉，乃是扎根在神的话上。（示例音频）", "duration": "32:10", "id": "a1", "size": "45 MB", "title": "信心的根基", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "人活着不是单靠食物，乃是靠神口里所出的一切话。（示例音频）", "duration": "28:45", "id": "a2", "size": "41 MB", "title": "生命的粮", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "彼此相爱，是主给我们的新命令。（示例音频）", "duration": "41:20", "id": "a3", "size": "59 MB", "title": "爱的命令", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "等候耶和华的，必重新得力。（示例音频）", "duration": "25:30", "id": "a4", "size": "36 MB", "title": "等候主", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "城光 App 视频栏目示例，正式讲道视频由管理员上传替换。", "duration": "09:56", "id": "v1", "size": "158 MB", "title": "城光：序", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "10:53", "id": "v2", "size": "176 MB", "title": "生命的粮", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "14:48", "id": "v3", "size": "200 MB", "title": "山上的城", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "12:14", "id": "v4", "size": "190 MB", "title": "光照在黑暗里", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}];
+const SEED_CATALOG = [{"category": "属灵书籍", "content": "认识基督，不是一套道理，乃是一个人。\n\n我们越认识祂，就越认识自己；越亲近祂，就越有力量走前面的路。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "认识基督，是属灵生命的起头，也是每天的功课。", "duration": "", "id": "b1", "size": "", "title": "认识基督", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "真实的属灵，不在乎人看得见的热心，乃在乎里面有没有基督的成分。\n\n生命长大是一天一天的事，急不得，也假不得。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "属灵的事不在外面，乃在里面；不在知识，乃在生命。", "duration": "", "id": "b2", "size": "", "title": "属灵的实际", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "环境来的时候，人总想问为什么；等走过去了，才看见那是恩典的手。\n\n经历不是白白得来的，是在顺服里一点一点积攒的。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "每一处环境，都是量给我们的功课。", "duration": "", "id": "b3", "size": "", "title": "生命的经历", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "祷告的起头很简单：停下来，把心里的话告诉主。\n\n天天这样操练，里面就渐渐有了安息和亮光。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "祷告不是仪式，乃是与主交通的生活。", "duration": "", "id": "b4", "size": "", "title": "祷告的操练", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "清晨的光照进窗来，\n我的心向你歌唱；\n荣耀、尊贵、权柄、能力，\n都归于坐宝座的羔羊。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "清晨醒来，第一句就是赞美。", "duration": "", "id": "p1", "size": "", "title": "荣耀归于主", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "长阔高深的爱，\n把我这个人全然包围；\n在软弱中祂扶持，\n在黑夜里祂是光。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "祂的爱，量不尽，也说不完。", "duration": "", "id": "p2", "size": "", "title": "主爱长阔高深", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "羔羊无论往哪里去，\n我都愿意跟随；\n路虽窄，心却安，\n因为祂与我同行。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "无论往哪里去，都跟随羔羊的脚踪。", "duration": "", "id": "p3", "size": "", "title": "跟随羔羊", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "一座城立在山上，\n光从城里透出来；\n愿这光照亮四方，\n叫人看见就归荣耀给父。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "城造在山上，是不能隐藏的。", "duration": "", "id": "p4", "size": "", "title": "城上的光", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}];
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -41,6 +44,12 @@ function newId(type) {
 function extOf(name) {
   const m = String(name || "").toLowerCase().match(/\.([a-z0-9]{2,5})$/);
   return m ? m[1] : "";
+}
+function slidesKey(itemId, ext) { return "media/" + itemId + "-slides." + ext; }
+function keyFromFileUrl(u) {
+  if (!u || !u.includes("/file/media/")) return "";
+  const k = decodeURIComponent(u.split("/file/")[1] || "");
+  return /^media\/[A-Za-z0-9._-]+$/.test(k) ? k : "";
 }
 
 // ---- 目录读写（R2） ----
@@ -300,7 +309,7 @@ export default {
       const itemId = key.slice("media/".length, -("." + ext).length);
       const item = {
         id: itemId, title, category, type,
-        url: url.origin + "/file/" + key, duration,
+        url: url.origin + "/file/" + key, pdfUrl: "", duration,
         size: humanSize(fileSize), description, content: "",
         status: "published", uploadedBy: "admin", createdAt: new Date().toISOString(),
       };
@@ -366,7 +375,7 @@ export default {
       const type = TYPE_BY_CATEGORY[category];
       const now = new Date().toISOString();
       const item = {
-        id: newId(type), title, category, type, url: "", duration,
+        id: newId(type), title, category, type, url: "", pdfUrl: "", duration,
         size: "", description, content: "",
         status: "published", uploadedBy: "admin", createdAt: now,
       };
@@ -420,6 +429,43 @@ export default {
       if (body.description !== undefined) item.description = String(body.description);
       if (body.duration !== undefined) item.duration = String(body.duration);
       if (body.content !== undefined) item.content = String(body.content);
+      if (typeof body.pdfUrl === "string") item.pdfUrl = body.pdfUrl;
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
+    // 讲章附件：上传（要登录）+ 删除（要登录）。PDF 优先，也收 PPT/PPTX。
+    if (path === "/api/upload/attachment" && request.method === "POST") {
+      let form;
+      try { form = await request.formData(); } catch (e) { return err("表单解析失败"); }
+      const itemId = String(form.get("itemId") || "");
+      const file = form.get("file");
+      if (!itemId) return err("缺少 itemId");
+      if (!file || file.size === 0) return err("请先选一个讲章文件");
+      if (file.size > MAX_SLIDES_BYTES) return err("讲章文件超过 100MB");
+      const ext = extOf(file.name);
+      if (!SLIDES_EXTS.includes(ext)) return err("讲章只收 PDF、PPT、PPTX");
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === itemId);
+      if (!item) return err("找不到这条内容", 404);
+      const key = slidesKey(itemId, ext);
+      const oldKey = keyFromFileUrl(item.pdfUrl || "");
+      if (oldKey && oldKey !== key) await env.CHENGGUANG_BUCKET.delete(oldKey);
+      await env.CHENGGUANG_BUCKET.put(key, file.stream(), {
+        httpMetadata: { contentType: SLIDES_CONTENT_TYPE[ext] || "application/pdf" },
+      });
+      item.pdfUrl = url.origin + "/file/" + key;
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+    if (path.startsWith("/api/items/") && path.endsWith("/attachment") && request.method === "DELETE") {
+      const id = decodeURIComponent(path.slice("/api/items/".length, -"/attachment".length));
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === id);
+      if (!item) return err("找不到这条内容", 404);
+      const oldKey = keyFromFileUrl(item.pdfUrl || "");
+      if (oldKey) await env.CHENGGUANG_BUCKET.delete(oldKey);
+      item.pdfUrl = "";
       await writeCatalog(env, items);
       return json({ ok: true, item });
     }
@@ -435,6 +481,10 @@ export default {
       if (item.url && item.url.includes("/file/media/")) {
         const key = decodeURIComponent(item.url.split("/file/")[1] || "");
         if (/^media\/[A-Za-z0-9._-]+$/.test(key)) await env.CHENGGUANG_BUCKET.delete(key);
+      }
+      if (item.pdfUrl) {
+        const skey = keyFromFileUrl(item.pdfUrl);
+        if (skey) await env.CHENGGUANG_BUCKET.delete(skey);
       }
       return json({ ok: true });
     }
@@ -494,7 +544,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <label>标题 *</label><input id="title">
     <label>栏目 *</label>
     <select id="category" onchange="onCategory()">
-      <option>属灵书籍</option><option>生命诗歌</option><option>讲道音频</option><option>讲道视频</option><option>主日信息</option><option>灵修信息</option>
+      <option>属灵书籍</option><option>生命诗歌</option><option>主日信息</option><option>灵修信息</option>
     </select>
     <label>简介</label><input id="description" placeholder="一句话简介">
     <div id="textBlock">
@@ -508,8 +558,12 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
       </div>
     </div>
     <div id="fileBlock" style="display:none">
-      <label>音频 / 视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
+      <label>音频文件 *（不超过 500MB；大文件自动分块上传）</label>
       <input type="file" id="file">
+      <label>讲章文件（可选）：PDF 最好；PPT 请先在 PowerPoint / WPS 里另存为 PDF 再传，直接传 PPT 的话 App 里是在线预览，要联网</label>
+      <input type="file" id="slidesFile" accept=".pdf,.ppt,.pptx">
+      <div id="slidesNow" class="muted" style="margin-top:4px"></div>
+      <button type="button" class="ghost" id="delSlidesBtn" style="display:none;margin-top:6px" onclick="delSlides()">删除已有讲章</button>
       <progress id="upProg" max="100" value="0" style="width:100%;display:none;margin-top:8px"></progress>
       <div id="upProgText" class="muted" style="margin-top:4px"></div>
       <label>时长（如 1:05:30，可不填）</label><input id="duration" placeholder="1:05:30">
@@ -538,7 +592,7 @@ var items = [];
 function showMsg(t, id) { document.getElementById(id || "msg").textContent = t || ""; }
 function onCategory() {
   var c = document.getElementById("category").value;
-  var isMedia = (c === "讲道音频" || c === "讲道视频" || c === "主日信息" || c === "灵修信息");
+  var isMedia = (c === "主日信息" || c === "灵修信息");
   document.getElementById("fileBlock").style.display = isMedia ? "block" : "none";
   document.getElementById("textBlock").style.display = isMedia ? "none" : "block";
 }
@@ -565,7 +619,7 @@ async function load() {
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
-    html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span></td>"
+    html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span>" + (it.pdfUrl ? "<br><span class='muted'>有讲章</span>" : "") + "</td>"
       + "<td>" + esc(it.category) + "</td><td>" + esc(it.size || "-") + "</td>"
       + "<td><button data-id='" + it.id + "' onclick='editItem(this.dataset.id)'>编辑</button> "
       + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>删除</button></td></tr>";
@@ -665,6 +719,10 @@ function resetForm() {
   if (docInput) docInput.value = "";
   var docMsg = document.getElementById("docImportMsg");
   if (docMsg) docMsg.textContent = "";
+  var slidesInput = document.getElementById("slidesFile");
+  if (slidesInput) slidesInput.value = "";
+  document.getElementById("slidesNow").textContent = "";
+  document.getElementById("delSlidesBtn").style.display = "none";
   showMsg("", "msg2");
 }
 function editItem(id) {
@@ -679,6 +737,13 @@ function editItem(id) {
   document.getElementById("content").value = it.content || "";
   document.getElementById("duration").value = it.duration || "";
   onCategory();
+  if (it.pdfUrl) {
+    document.getElementById("slidesNow").textContent = "已有讲章：" + it.pdfUrl.split("/").pop();
+    document.getElementById("delSlidesBtn").style.display = "inline-block";
+  } else {
+    document.getElementById("slidesNow").textContent = "";
+    document.getElementById("delSlidesBtn").style.display = "none";
+  }
   window.scrollTo(0, 0);
 }
 async function save() {
@@ -695,12 +760,17 @@ async function save() {
         content: document.getElementById("content").value }) });
     var d = await r.json();
     if (!d.ok) { showMsg(d.error || "保存失败", "msg2"); return; }
+    var sf = document.getElementById("slidesFile").files[0];
+    if (sf) {
+      var okS = await uploadAttachment(editId, sf);
+      if (!okS) return;
+    }
     showMsg("已保存", "msg2"); resetForm(); load(); return;
   }
   var f = document.getElementById("file").files[0];
   var cat = document.getElementById("category").value;
-  var isMedia = (cat === "讲道音频" || cat === "讲道视频" || cat === "主日信息" || cat === "灵修信息");
-  // 音视频一律走分块上传：10MB 一块顺序上传，音频上限 500MB，视频上限 2GB
+  var isMedia = (cat === "主日信息" || cat === "灵修信息");
+  // 音频一律走分块上传：10MB 一块顺序上传，上限 500MB
   if (isMedia && f) {
     await uploadChunked(title, cat, f);
     return;
@@ -777,7 +847,33 @@ async function uploadChunked(title, category, file) {
   }
   prog.style.display = "none";
   progText.textContent = "";
+  var sf2 = document.getElementById("slidesFile").files[0];
+  if (sf2) {
+    var okS2 = await uploadAttachment(cd.item.id, sf2);
+    if (!okS2) return;
+  }
   showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
+}
+async function uploadAttachment(itemId, file) {
+  var fd = new FormData();
+  fd.append("itemId", itemId);
+  fd.append("file", file);
+  showMsg("正在上传讲章，请稍等…", "msg2");
+  var r = await fetch("/api/upload/attachment", { method: "POST", body: fd });
+  var d = await r.json();
+  if (!d.ok) { showMsg(d.error || "讲章上传失败", "msg2"); return false; }
+  return true;
+}
+async function delSlides() {
+  var editId = document.getElementById("editId").value;
+  if (!editId) return;
+  if (!confirm("确定删除这条内容的讲章吗？")) return;
+  var r = await fetch("/api/items/" + encodeURIComponent(editId) + "/attachment", { method: "DELETE" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "删除失败"); return; }
+  document.getElementById("slidesNow").textContent = "";
+  document.getElementById("delSlidesBtn").style.display = "none";
+  load();
 }
 async function delItem(id, title) {
   if (!confirm("确定删除「" + title + "」吗？文件和目录都会删掉。")) return;

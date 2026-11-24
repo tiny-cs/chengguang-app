@@ -1,7 +1,11 @@
 package com.maihe.chengguang
 
+import android.app.DownloadManager
+import android.content.Context
+import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Environment
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.compose.foundation.background
@@ -43,11 +47,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import java.net.URLEncoder
 
 @Composable
 fun DetailScreen(item: CatalogItem, downloads: DownloadStore) {
@@ -171,6 +177,76 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
                 Text(hint, fontSize = 13.sp, color = Color(0xFF8E4A2F))
             }
         }
+    }
+}
+
+/** 讲章附件：PDF 直接用系统查看器打开；PPT/PPTX 用微软在线预览打开（要联网）。 */
+@Composable
+fun SlidesSection(item: CatalogItem) {
+    if (item.pdfUrl.isBlank()) return
+    val context = LocalContext.current
+    var hint by remember { mutableStateOf("") }
+    val lower = item.pdfUrl.lowercase()
+    val isPdf = lower.endsWith(".pdf")
+    val isSlides = lower.endsWith(".ppt") || lower.endsWith(".pptx")
+    val fileName = item.pdfUrl.substringAfterLast("/").substringBefore("?").ifEmpty { "讲章.pdf" }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("讲章", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                when {
+                    isPdf -> "PDF 讲章，可在线查看，也可下载到手机离线看"
+                    isSlides -> "PPT 讲章，在线预览打开（要联网）；建议管理员转成 PDF 再传，打开更快"
+                    else -> "讲章附件"
+                },
+                fontSize = 14.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    hint = if (openSlides(context, item.pdfUrl, isPdf)) "" else "打不开讲章，请检查网络后重试"
+                }) { Text("查看讲章") }
+                OutlinedButton(onClick = {
+                    hint = if (downloadSlides(context, item, fileName)) "已开始下载，可在通知栏查看" else "下载失败，请检查网络后重试"
+                }) { Text("下载讲章") }
+            }
+            if (hint.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(hint, fontSize = 13.sp, color = Color.Gray)
+            }
+        }
+    }
+}
+
+private fun openSlides(context: Context, url: String, isPdf: Boolean): Boolean {
+    return try {
+        val viewUrl = if (isPdf) url
+        else "https://view.officeapps.live.com/op/view.aspx?src=" + URLEncoder.encode(url, "UTF-8")
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(viewUrl)))
+        true
+    } catch (_: Exception) {
+        reportMessage("slides-open", url)
+        false
+    }
+}
+
+private fun downloadSlides(context: Context, item: CatalogItem, fileName: String): Boolean {
+    return try {
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val req = DownloadManager.Request(Uri.parse(item.pdfUrl))
+            .setTitle(item.title + "讲章")
+            .setDescription(fileName)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        dm.enqueue(req)
+        true
+    } catch (_: Exception) {
+        reportMessage("slides-download", item.title)
+        false
     }
 }
 
@@ -317,6 +393,8 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
         Spacer(modifier = Modifier.height(20.dp))
         DownloadSection(item, downloads)
         Spacer(modifier = Modifier.height(16.dp))
+        SlidesSection(item)
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
@@ -371,6 +449,8 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
             Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
             Spacer(modifier = Modifier.height(20.dp))
             DownloadSection(item, downloads)
+            Spacer(modifier = Modifier.height(16.dp))
+            SlidesSection(item)
             Spacer(modifier = Modifier.height(16.dp))
         }
     }

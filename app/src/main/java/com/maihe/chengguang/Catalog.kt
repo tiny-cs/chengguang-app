@@ -19,6 +19,7 @@ data class CatalogItem(
     val category: String,
     val type: String, // book / poem / audio / video
     val url: String = "",
+    val pdfUrl: String = "", // 讲章附件（PDF 优先，也可是 PPT）：音频/视频详情页里查看和下载；为空表示没有
     val duration: String = "",
     val size: String = "",
     val description: String = "",
@@ -28,7 +29,7 @@ data class CatalogItem(
     val createdAt: String = ""
 )
 
-val CATEGORIES = listOf("属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息")
+val CATEGORIES = listOf("属灵书籍", "生命诗歌", "主日信息", "灵修信息")
 
 /**
  * 管理后台的目录地址（自定义域名，国内可访问）：

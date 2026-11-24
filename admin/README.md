@@ -37,11 +37,13 @@ admin/
 | POST | `/api/upload/part?uploadId=&key=&partNumber=` | 分块上传第 2 步：body 为一块原始数据（10MB），返回 etag（要登录） |
 | POST | `/api/upload/complete` | 分块上传第 3 步：合并分块并写目录（要登录） |
 | POST | `/api/upload/abort` | 取消未完成的分块上传（要登录） |
+| POST | `/api/upload/attachment` | 讲章附件上传（要登录）：multipart `{itemId, file}`，只收 PDF、PPT、PPTX，≤100MB，存 `media/<id>-slides.<ext>`，写回 `pdfUrl` |
+| DELETE | `/api/items/:id/attachment` | 删讲章附件（要登录）：删 R2 文件并清空 `pdfUrl` |
 | POST | `/api/feedback` | 读者提建议（公开，不用登录）：`{text, contact?}` → 存 R2 `feedback.json`，最多 500 条 |
 | GET | `/api/feedback` | 读者建议列表（要登录） |
 | DELETE | `/api/feedback/:id` | 删一条建议（要登录） |
-| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文（要登录） |
-| DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（要登录） |
+| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文 / 讲章链接 `pdfUrl`（要登录） |
+| DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（含讲章附件）（要登录） |
 
 ## 上传规则
 
@@ -49,10 +51,17 @@ admin/
   也可以点“从文件导入正文”选一个 TXT、PDF 或 Word `.docx`，浏览器自动提取文字填进正文框，
   检查后点保存即可（TXT 直接读；PDF 用 pdf.js 按页提文字，扫描图片版提不出；Word 用 mammoth 提 `.docx` 纯文本，
   老格式 `.doc` 请另存为 `.docx` 再传；超过 100 万字请按章节拆开传）。原文件不存进 R2，只存提取出的正文。
-- 音频 / 视频：必须传文件；只收 mp3/m4a/wav/ogg/aac/flac 和 mp4/mov/webm/mkv/m4v。
-- 音视频走分块上传：浏览器把文件切成 10MB 一块顺序传到 Worker，Worker 经 R2 分块上传接口写进桶，
-  绕过 Workers 单次 100MB 请求体上限。音频上限 500MB，视频上限 2GB。
+- 音频（主日信息、灵修信息）：必须传 mp3 等音频文件；只收 mp3/m4a/wav/ogg/aac/flac。
+- 音频走分块上传：浏览器把文件切成 10MB 一块顺序传到 Worker，Worker 经 R2 分块上传接口写进桶，
+  绕过 Workers 单次 100MB 请求体上限。音频上限 500MB。
   书籍 / 诗歌的附件仍走旧的单次上传（上限 100MB）。
+- 讲章附件：传音频时可同时选一个讲章文件（PDF 最好，也收 PPT、PPTX，≤100MB），
+  挂在同条内容上，App 音频详情页里有“查看讲章 / 下载讲章”。
+  PPT 请先在 PowerPoint / WPS 里另存为 PDF 再传：PDF 在 App 里直接用系统查看器打开，
+  直接传 PPT 的话 App 走微软在线预览，要联网，国内可能打不开。
+  已有内容也可以点“编辑”补传、换掉或删除讲章。删整条内容时，讲章文件一起删。
+- 栏目只有 4 个：属灵书籍、生命诗歌、主日信息、灵修信息。讲道音频、讲道视频已在 1.2.6 删掉，
+  它们名下的 8 条示例内容请在后台“全部内容”里手动删除（种子目录里已去掉，线上旧目录不受重新部署影响）。
 - 上传后立即进目录，App 下次打开就能看到，不用重新打包 App。
 
 ## 以后加“指定人上传、管理员审核”
