@@ -336,9 +336,15 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
         Spacer(modifier = Modifier.height(28.dp))
         IconButton(
             onClick = {
-                if (status == "已就绪" || status == "已就绪（离线播放）" || status == "已播完" || isPlaying) {
+                // 播放按钮只在“能播”的状态下起作用：就绪、播完、已暂停，以及正在播放时点暂停。
+                // 注意：暂停后状态是“已暂停”，以前漏了这个状态，点播放没反应。
+                if (status == "已就绪" || status == "已就绪（离线播放）" || status == "已播完" || status == "已暂停" || isPlaying) {
                     if (isPlaying) {
-                        player.pause()
+                        try {
+                            player.pause()
+                        } catch (_: Exception) {
+                            reportMessage("audio-pause", item.title)
+                        }
                         isPlaying = false
                         status = "已暂停"
                     } else {
@@ -349,7 +355,13 @@ fun AudioDetail(item: CatalogItem, downloads: DownloadStore) {
                             }
                             positionMs = 0
                         }
-                        player.start()
+                        try {
+                            player.start()
+                        } catch (_: Exception) {
+                            status = "播放失败，请重试"
+                            reportMessage("audio-playback", item.title)
+                            return@IconButton
+                        }
                         isPlaying = true
                         status = "正在播放"
                     }
