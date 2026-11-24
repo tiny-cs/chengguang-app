@@ -31,7 +31,9 @@ admin/
 | POST | `/api/login` | `{password}` → 写 HttpOnly Cookie `cg_admin`（30 天） |
 | POST | `/api/logout` | 清 Cookie |
 | GET | `/api/me` | 是否已登录 |
-| GET | `/api/items` | 全部目录 + 存储占用（要登录） |
+| GET | `/api/items` | 全部目录（含正文全文）+ 存储占用（要登录，留着备用） |
+| GET | `/api/items-lite` | 轻量列表（去掉 `content` 全文）+ 存储占用（要登录；管理页列表用这个，慢网也能几秒出来） |
+| GET | `/api/items/:id` | 单条（含 `content` 全文，给编辑表单用；找不到返回 404）（要登录） |
 | POST | `/api/upload` | multipart 小文件上传（书籍 / 诗歌附件，要登录；音视频已改走分块上传） |
 | POST | `/api/upload/init` | 分块上传第 1 步：建分块上传，返回 uploadId / key / partSize=10MB（要登录） |
 | POST | `/api/upload/part?uploadId=&key=&partNumber=` | 分块上传第 2 步：body 为一块原始数据（10MB），返回 etag（要登录） |

@@ -392,6 +392,32 @@ export default {
       return json({ ok: true, items, totalBytes, fileCount, totalBytesText: humanSize(totalBytes) });
     }
 
+    // 轻量列表：去掉 content 全文（慢网下列表几秒就能出来；编辑时再按条取全文）
+    if (path === "/api/items-lite" && request.method === "GET") {
+      const items = await readCatalog(env);
+      let totalBytes = 0, fileCount = 0, cursor = undefined;
+      do {
+        const listed = await env.CHENGGUANG_BUCKET.list({ cursor, limit: 1000 });
+        for (const o of listed.objects) { totalBytes += o.size; fileCount++; }
+        cursor = listed.truncated ? listed.cursor : undefined;
+      } while (cursor);
+      const lite = items.map((it) => {
+        const copy = { ...it };
+        delete copy.content;
+        return copy;
+      });
+      return json({ ok: true, items: lite, totalBytes, fileCount, totalBytesText: humanSize(totalBytes) });
+    }
+
+    // 单条（含 content 全文，给编辑表单用）
+    if (path.startsWith("/api/items/") && request.method === "GET") {
+      const id = decodeURIComponent(path.slice("/api/items/".length));
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === id);
+      if (!item) return err("找不到这条内容", 404);
+      return json({ ok: true, item });
+    }
+
     // 读者建议：查看（要登录）+ 删除（要登录）
     if (path === "/api/feedback" && request.method === "GET") {
       const list = await readFeedback(env);
@@ -737,9 +763,28 @@ async function logout() {
   location.reload();
 }
 async function load() {
-  var r = await fetch("/api/items");
-  var d = await r.json();
-  if (!d.ok) { showMsg(d.error || "加载失败"); return; }
+  // 先给加载态，别让条数一直停在初始的 0 上
+  document.getElementById("count").textContent = "…";
+  document.getElementById("list").innerHTML = "<tr><td colspan='4'>正在加载内容…</td></tr>";
+  // 轻量列表（不含正文），慢网也能几秒出来；60 秒还没回来就当失败
+  var ctl = new AbortController();
+  var timer = setTimeout(function () { ctl.abort(); }, 60000);
+  var r, d;
+  try {
+    r = await fetch("/api/items-lite", { signal: ctl.signal });
+    d = await r.json();
+  } catch (e) {
+    clearTimeout(timer);
+    document.getElementById("count").textContent = "—";
+    document.getElementById("list").innerHTML = "<tr><td colspan='4'>加载失败：网络太慢或断开了。 <button onclick='load()'>重试</button></td></tr>";
+    return;
+  }
+  clearTimeout(timer);
+  if (!d.ok) {
+    document.getElementById("count").textContent = "—";
+    document.getElementById("list").innerHTML = "<tr><td colspan='4'>加载失败：" + esc(d.error || "") + " <button onclick='load()'>重试</button></td></tr>";
+    return;
+  }
   items = d.items || [];
   document.getElementById("count").textContent = items.length;
   document.getElementById("storage").textContent = "存储占用：" + (d.totalBytesText || "0 MB") + "（" + d.fileCount + " 个文件，R2 每月免费 10GB）";
@@ -985,10 +1030,21 @@ function resetForm() {
   document.getElementById("delSheetBtn").style.display = "none";
   showMsg("", "msg2");
 }
-function editItem(id) {
+async function editItem(id) {
   var it = null;
   for (var i = 0; i < items.length; i++) if (items[i].id === id) it = items[i];
   if (!it) return;
+  // 列表是轻量的、没有正文，编辑前按条取全文；取不到就不开表单，
+  // 免得正文框是空的、一点保存就把原文盖掉
+  try {
+    var r = await fetch("/api/items/" + encodeURIComponent(id));
+    var d = await r.json();
+    if (!d.ok || !d.item) { alert(d.error || "正文加载失败，请检查网络后重试"); return; }
+    it = d.item;
+  } catch (e) {
+    alert("正文加载失败，请检查网络后重试");
+    return;
+  }
   document.getElementById("editId").value = it.id;
   document.getElementById("formTitle").textContent = "编辑：" + it.title;
   document.getElementById("title").value = it.title;
