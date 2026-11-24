@@ -204,19 +204,19 @@ fun buildNotesExportText(title: String, paragraphs: List<String>, notes: Map<Int
 }
 
 /** 用系统分享把导出的文字发出去（微信、存文件都由用户自己选）。 */
-fun shareNotesText(context: Context, text: String, title: String) {
+fun shareNotesText(context: Context, text: String, title: String, chooserTitle: String = "分享批注") {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_SUBJECT, title)
         putExtra(Intent.EXTRA_TEXT, text)
     }
-    context.startActivity(Intent.createChooser(intent, "分享批注"))
+    context.startActivity(Intent.createChooser(intent, chooserTitle))
 }
 
 /** 把导出的文字复制到剪贴板。 */
-fun copyNotesText(context: Context, text: String) {
+fun copyNotesText(context: Context, text: String, label: String = "城光批注") {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("城光批注", text))
+    cm.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 // ---------- 弹窗 ----------

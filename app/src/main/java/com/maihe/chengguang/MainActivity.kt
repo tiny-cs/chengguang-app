@@ -1,6 +1,7 @@
 package com.maihe.chengguang
 
 import android.Manifest
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -120,6 +121,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 小窗口里的播放/暂停按钮：动态注册 Receiver（只收自己 App 的广播，不出口）。
+        ContextCompat.registerReceiver(
+            this, VideoPip.receiver,
+            IntentFilter(VideoPip.ACTION_TOGGLE),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -138,6 +145,14 @@ class MainActivity : ComponentActivity() {
                 ChengguangApp()
             }
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(VideoPip.receiver)
+        } catch (_: Exception) {
+        }
+        super.onDestroy()
     }
 }
 
@@ -265,7 +280,8 @@ fun ChengguangApp() {
                 is Route.Detail -> {
                     val item = items.find { it.id == r.id }
                     if (item != null) {
-                        val siblings = items.filter { it.category == item.category && it.type == "audio" }
+                        // 切歌列表：同栏目、同类型（音频还是音频的，视频现在也有自己的列表了）
+                        val siblings = items.filter { it.category == item.category && it.type == item.type }
                         DetailScreen(item, downloads, bookshelf, siblings, onSelectItem = { id ->
                             stack[stack.lastIndex] = Route.Detail(id)
                         }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) },

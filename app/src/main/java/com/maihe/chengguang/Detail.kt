@@ -2,7 +2,6 @@ package com.maihe.chengguang
 
 import android.app.Activity
 import android.app.DownloadManager
-import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -14,6 +13,7 @@ import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,7 +82,7 @@ fun DetailScreen(
 ) {
     when (item.type) {
         "audio" -> AudioDetail(item, downloads, siblings, onSelectItem, onViewPdf)
-        "video" -> VideoDetail(item, downloads, onViewPdf, onFullscreenChange)
+        "video" -> VideoDetail(item, downloads, onViewPdf, onFullscreenChange, siblings, onSelectItem)
         else -> ReadingDetail(item, bookshelf, vocab)
     }
 }
@@ -455,7 +455,9 @@ fun VideoDetail(
     item: CatalogItem,
     downloads: DownloadStore,
     onViewPdf: (String, String) -> Unit = { _, _ -> },
-    onFullscreenChange: (Boolean) -> Unit = {}
+    onFullscreenChange: (Boolean) -> Unit = {},
+    siblings: List<CatalogItem> = emptyList(),
+    onSelectItem: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -476,6 +478,12 @@ fun VideoDetail(
     val pageResumed = remember { mutableStateOf(true) }
     val autoPaused = remember { mutableStateOf(false) }
     val pipRequested = remember { mutableStateOf(false) }
+    // 倍速和播放模式：照音频页那套（SPEEDS / PlayMode），只影响视频页；
+    // 不用 remember(item.id)，换一首不重置（离开视频页才重置）；
+    // MediaPlayer 引用存在这里，倍速要直接调它（VideoView 自己不暴露播放器）。
+    var videoSpeed by remember { mutableStateOf(1f) }
+    var videoMode by remember { mutableStateOf(PlayMode.ORDER) }
+    val mediaPlayerRef = remember { mutableStateOf<MediaPlayer?>(null) }
     // 画中画状态在 MainActivity 上（系统回调里更新）：小窗口里只显示视频本身。
     val inPip = (activity as? MainActivity)?.pipMode?.value == true
 
@@ -522,12 +530,126 @@ fun VideoDetail(
         val act = activity ?: return false
         val (w, h) = videoSize.value ?: (16 to 9)
         pipRequested.value = true
-        val params = PictureInPictureParams.Builder()
-            .setAspectRatio(pipAspectRatio(w, h))
-            .build()
+        // 小窗口参数里带上播放/暂停按钮（图标按当前是不是在播来定）
+        val params = VideoPip.pipParams(act, pipAspectRatio(w, h), videoViewRef.value?.isPlaying == true)
         val ok = act.enterPictureInPictureMode(params)
         if (!ok) pipRequested.value = false
         return ok
+    }
+
+    /** 倍速：直接调 MediaPlayer 的 playbackParams（AudioPlayer.applySpeed() 同款做法）；
+     * 1.0x 也要调——调回 1.0x 时不调会留在上一个倍速上。没准备好会抛异常，等准备好再调。 */
+    fun applyVideoSpeed(mp: MediaPlayer? = mediaPlayerRef.value) {
+        val p = mp ?: return
+        try {
+            p.playbackParams = p.playbackParams.setSpeed(videoSpeed)
+        } catch (_: Exception) {
+            // 没准备好时调倍速会抛异常，OnPrepared 里会再调一次
+        }
+    }
+
+    fun videoSpeedLabel(): String = when (videoSpeed) {
+        0.75f -> "0.75x"
+        1f -> "1.0x"
+        1.25f -> "1.25x"
+        1.5f -> "1.5x"
+        else -> "2.0x"
+    }
+
+    fun cycleVideoSpeed() {
+        val speeds = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
+        videoSpeed = speeds[(speeds.indexOf(videoSpeed) + 1).mod(speeds.size)]
+        applyVideoSpeed()
+    }
+
+    /** 播放模式只转三个：顺序播放 / 单曲循环 / 列表循环（视频不用随机播放）。 */
+    fun cycleVideoMode() {
+        videoMode = when (videoMode) {
+            PlayMode.ORDER -> PlayMode.SINGLE
+            PlayMode.SINGLE -> PlayMode.LOOP_ALL
+            else -> PlayMode.ORDER
+        }
+    }
+
+    /** 下一首按钮：单曲循环或只有一首时从头重播，其余按顺序切下一首（到尾了绕回第一首）；
+     * 照 AudioPlayer.next() 的做法。 */
+    fun playNextVideo() {
+        val vv = videoViewRef.value
+        if (videoMode == PlayMode.SINGLE || siblings.size <= 1) {
+            try {
+                vv?.seekTo(0)
+                vv?.start()
+            } catch (_: Exception) {
+            }
+            return
+        }
+        val idx = siblings.indexOfFirst { it.id == item.id }
+        if (idx < 0) return
+        onSelectItem(siblings[(idx + 1).mod(siblings.size)].id)
+    }
+
+    /** 小窗口里的播放/暂停按钮图标跟着状态走：在小窗口里时状态变了就重传一次参数。
+     * 不在小窗口里不用调（下次进小窗口时 enterPip 会按当前状态重新传）。 */
+    fun refreshPipActions() {
+        val act = activity ?: return
+        if (!act.isInPictureInPictureMode) return
+        val (w, h) = videoSize.value ?: (16 to 9)
+        act.setPictureInPictureParams(
+            VideoPip.pipParams(act, pipAspectRatio(w, h), videoViewRef.value?.isPlaying == true)
+        )
+    }
+
+    /** 小窗口里的播放/暂停按钮点的就是这个（VideoPip.onToggle 注册到这里）：
+     * 播着就暂停，停着就继续；播到结尾了从头播。缓冲中 / 加载失败时不理会。 */
+    fun toggleVideoPlayback() {
+        val vv = videoViewRef.value ?: return
+        if (buffering.value || playFailed.value) return
+        try {
+            if (vv.isPlaying) {
+                vv.pause()
+            } else {
+                if (vv.duration > 0 && vv.currentPosition >= vv.duration - 200) vv.seekTo(0)
+                vv.start()
+            }
+        } catch (_: Exception) {
+        }
+        refreshPipActions()
+    }
+
+    /** 播完一首：照 AudioPlayer.onTrackEnded 的逻辑。 */
+    fun onVideoEnded() {
+        val vv = videoViewRef.value
+        when (videoMode) {
+            PlayMode.SINGLE -> {
+                try {
+                    vv?.seekTo(0)
+                    vv?.start()
+                } catch (_: Exception) {
+                }
+            }
+            PlayMode.ORDER -> {
+                val idx = siblings.indexOfFirst { it.id == item.id }
+                if (idx >= 0 && idx < siblings.size - 1) {
+                    onSelectItem(siblings[idx + 1].id)
+                } else {
+                    // 顺序播到最后一首：停在结尾，小窗口按钮换成播放图标
+                    refreshPipActions()
+                }
+            }
+            PlayMode.LOOP_ALL -> {
+                if (siblings.size <= 1) {
+                    try {
+                        vv?.seekTo(0)
+                        vv?.start()
+                    } catch (_: Exception) {
+                    }
+                } else {
+                    val idx = siblings.indexOfFirst { it.id == item.id }
+                    if (idx >= 0) onSelectItem(siblings[(idx + 1).mod(siblings.size)].id)
+                }
+            }
+            else -> refreshPipActions() // SHUFFLE 不用于视频
+        }
     }
 
     // 全屏时按返回先退全屏，不直接退回上一页（这个 BackHandler 比 ChengguangApp
@@ -542,8 +664,13 @@ fun VideoDetail(
         act?.onUserLeaveHintAction = {
             if (videoViewRef.value?.isPlaying == true) enterPip()
         }
+        // 小窗口里的播放/暂停按钮：Receiver 收到点按就调这里；离开页面时清掉
+        VideoPip.onToggle = { toggleVideoPlayback() }
+        VideoPip.getIsPlaying = { videoViewRef.value?.isPlaying == true }
         onDispose {
             act?.onUserLeaveHintAction = null
+            VideoPip.onToggle = null
+            VideoPip.getIsPlaying = null
             activity?.let {
                 it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 if (localView.isAttachedToWindow) {
@@ -613,8 +740,10 @@ fun VideoDetail(
                         controller.setAnchorView(this)
                         setMediaController(controller)
                         setOnPreparedListener { mp ->
+                            mediaPlayerRef.value = mp
                             videoSize.value = mp.videoWidth to mp.videoHeight
                             buffering.value = false
+                            applyVideoSpeed(mp)
                             // 页面在前台（或在小窗口里）才自动播；刚打开还在缓冲就切后台了，
                             // 先别出声，等回来再播（见上面的 autoPaused）。
                             if (pageResumed.value || activity?.isInPictureInPictureMode == true) {
@@ -622,6 +751,8 @@ fun VideoDetail(
                             } else {
                                 autoPaused.value = true
                             }
+                            // 换了一首（尤其是在小窗口里自动切歌）：比例和按钮图标都按新视频刷新
+                            refreshPipActions()
                         }
                         setOnInfoListener { _, what, _ ->
                             when (what) {
@@ -640,6 +771,9 @@ fun VideoDetail(
                     }
                 },
                 update = { view ->
+                    // 播完回调放在 update 里设（不在 factory 里）：换一首后 siblings 列表变了，
+                    // 这里每次重组都用最新的列表，factory 里只会抓到第一次的旧列表。
+                    view.setOnCompletionListener { onVideoEnded() }
                     // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
                     if (view.tag != uri.toString()) {
                         view.tag = uri.toString()
@@ -653,6 +787,7 @@ fun VideoDetail(
                     // 离开视频页就彻底停掉，不然 VideoView 会在后台继续出声
                     // （进画中画、转屏都不会走到这里，组合还在，不会误停）。
                     videoViewRef.value = null
+                    mediaPlayerRef.value = null
                     v.stopPlayback()
                 },
                 modifier = Modifier.fillMaxSize()
@@ -705,6 +840,19 @@ fun VideoDetail(
             ) {
                 OutlinedButton(onClick = { enterFullscreen() }) { Text("全屏", fontSize = 14.sp) }
                 OutlinedButton(onClick = { enterPip() }) { Text("小窗口", fontSize = 14.sp) }
+            }
+            // 倍速 / 播放模式 / 下一首：照音频页那套，只影响视频；窄屏上横向能滑开，不会溢出
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = { cycleVideoSpeed() }) { Text("倍速 ${videoSpeedLabel()}", fontSize = 14.sp) }
+                OutlinedButton(onClick = { cycleVideoMode() }) { Text("模式：${videoMode.label}", fontSize = 14.sp) }
+                OutlinedButton(onClick = { playNextVideo() }) { Text("下一首", fontSize = 14.sp) }
             }
             Column(modifier = Modifier.padding(horizontal = 20.dp)) {
                 Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)

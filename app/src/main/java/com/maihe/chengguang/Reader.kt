@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -36,17 +38,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -236,20 +244,119 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     // 词典翻译（二期第 6 块）：只对属灵书籍有效，诗歌是短文本，不做
     var showLookup by remember { mutableStateOf(false) }
 
+    // 仿真翻页（二期第 7 块）：默认滚动，别把现有行为默认改掉
+    var pageMode by remember { mutableStateOf(loadPageTurnMode(context)) }
+    // 仿真模式下正文区的实际尺寸（分页要按它量）
+    var contentWidthPx by remember { mutableStateOf(0) }
+    var contentHeightPx by remember { mutableStateOf(0) }
+    // 待跳转的段落：分页还没算出来时先记下来，算出来再跳
+    var pendingJumpPara by remember { mutableStateOf<Int?>(null) }
+    // 锚定段落：字号/简繁一改页数就变，靠它回到读到的地方
+    var anchorPara by remember(item.id) { mutableStateOf(0) }
+
+    // ---- 仿真翻页：分页（按当前字号/行距/简繁实测）----
+    val textMeasurer = rememberTextMeasurer()
+    val textWidthPx = (contentWidthPx - with(density) { 40.dp.toPx() }).toInt().coerceAtLeast(0)
+    val measureStyle = TextStyle(fontSize = fontSize.sp, lineHeight = lineHeight.sp, color = theme.text)
+    // 页眉高度：标题 22sp + 分类 13sp + 简介 15sp + 各处留白（和下面 ReaderHeader 的结构一致）
+    val headerHeightPx = remember(textMeasurer, textWidthPx, item.title, item.description) {
+        if (textWidthPx <= 0) 0f
+        else {
+            val c = Constraints(maxWidth = textWidthPx)
+            var h = with(density) { 8.dp.toPx() }
+            h += textMeasurer.measure(
+                AnnotatedString(item.title),
+                TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold), c
+            ).size.height
+            h += with(density) { 6.dp.toPx() }
+            h += textMeasurer.measure(
+                AnnotatedString(item.category), TextStyle(fontSize = 13.sp), c
+            ).size.height
+            if (item.description.isNotEmpty()) {
+                h += with(density) { 12.dp.toPx() }
+                h += textMeasurer.measure(
+                    AnnotatedString(item.description), TextStyle(fontSize = 15.sp), c
+                ).size.height
+            }
+            h += with(density) { 12.dp.toPx() + 1.dp.toPx() + 16.dp.toPx() + 8.dp.toPx() }
+            h
+        }
+    }
+    // 页尾高度：和下面 ReaderTail 的结构一致
+    val tailHeightPx = remember(textMeasurer, textWidthPx) {
+        if (textWidthPx <= 0) 0f
+        else {
+            val c = Constraints(maxWidth = textWidthPx)
+            val textH = textMeasurer.measure(
+                AnnotatedString("正文已随 App 自带，离线也能读，无需下载。"),
+                TextStyle(fontSize = 12.sp), c
+            ).size.height
+            with(density) { 8.dp.toPx() + 16.dp.toPx() + 1.dp.toPx() + 8.dp.toPx() } +
+                textH + with(density) { 16.dp.toPx() + 8.dp.toPx() }
+        }
+    }
+    val gapPx = with(density) { 10.dp.toPx() }
+    // 批注行高度：只在段落最后一块下面出现（13sp，最多 2 行，上面留 6dp）
+    val noteHeightOf: (Int) -> Float = remember(textMeasurer, textWidthPx, notesMap) {
+        val cache = mutableMapOf<Int, Float>()
+        { paraIdx: Int ->
+            cache.getOrPut(paraIdx) {
+                val note = notesMap[paraIdx]?.note.orEmpty()
+                if (note.isBlank() || textWidthPx <= 0) 0f
+                else {
+                    val c = Constraints(maxWidth = textWidthPx)
+                    val h = textMeasurer.measure(
+                        AnnotatedString("✎ $note"),
+                        TextStyle(fontSize = 13.sp), c, maxLines = 2
+                    ).size.height
+                    h + with(density) { 6.dp.toPx() }
+                }
+            }
+        }
+    }
+    val pages = remember(
+        displayParagraphs, textMeasurer, measureStyle, textWidthPx, contentHeightPx,
+        headerHeightPx, tailHeightPx, noteHeightOf, pageMode
+    ) {
+        if (pageMode != PageTurnMode.PAGE || textWidthPx <= 0 || contentHeightPx <= 0) emptyList()
+        else paginateBook(
+            paragraphs = displayParagraphs,
+            measurer = textMeasurer,
+            textStyle = measureStyle,
+            headerHeightPx = headerHeightPx,
+            tailHeightPx = tailHeightPx,
+            noteHeightPx = noteHeightOf,
+            textWidthPx = textWidthPx,
+            pageHeightPx = contentHeightPx.toFloat(),
+            gapPx = gapPx
+        )
+    }
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+
     // 打开时回到上次读到的地方（列表位置 1..N 才是正文段落，0 是标题头）
     LaunchedEffect(item.id) {
         val saved = loadLastPosition(context, item.id)
         if (saved in 1..paragraphs.size) {
-            listState.scrollToItem(saved)
+            if (pageMode == PageTurnMode.PAGE) {
+                // 分页还没算出来，先记下来，算出来再跳（下面的分页 effect 会处理）
+                pendingJumpPara = saved - 1
+            } else {
+                listState.scrollToItem(saved)
+            }
             resumedHint = true
             delay(3000)
             resumedHint = false
         }
     }
 
-    // 离开页面时保存阅读位置
-    DisposableEffect(item.id) {
-        onDispose { saveLastPosition(context, item.id, listState.firstVisibleItemIndex) }
+    // 离开页面时保存阅读位置（存段落下标+1，两种模式通用）
+    val anchorParaState = rememberUpdatedState(anchorPara)
+    DisposableEffect(item.id, pageMode) {
+        onDispose {
+            val para = if (pageMode == PageTurnMode.PAGE) anchorParaState.value
+                else (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+            saveLastPosition(context, item.id, para + 1)
+        }
     }
 
     // 进阅读器就算读过：书架里的这本书最近阅读时间更新一下（不在书架的不动；诗歌不进书架）
@@ -271,7 +378,38 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             }
             matchIndices = found
             currentMatch = 0
-            if (found.isNotEmpty()) listState.scrollToItem(found[0] + 1)
+            if (found.isNotEmpty()) jumpToPara(found[0], animate = false)
+        }
+    }
+
+    /** 跳到某一段：滚动模式滚列表，仿真模式翻到那段所在的页。
+     * 分页还没算出来时先记下来（pendingJumpPara），算出来再跳。 */
+    fun jumpToPara(paraIdx: Int, animate: Boolean = true) {
+        val target = paraIdx.coerceIn(0, paragraphs.size - 1)
+        if (pageMode == PageTurnMode.PAGE) {
+            if (pages.isNotEmpty()) {
+                val page = pageOfPara(pages, target)
+                scope.launch {
+                    if (animate) pagerState.animateScrollToPage(page)
+                    else pagerState.scrollToPage(page)
+                }
+            } else {
+                pendingJumpPara = target
+            }
+        } else {
+            scope.launch { listState.scrollToItem(target + 1) }
+        }
+    }
+
+    fun prevPage() {
+        scope.launch { pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0)) }
+    }
+
+    fun nextPage() {
+        scope.launch {
+            pagerState.animateScrollToPage(
+                (pagerState.currentPage + 1).coerceAtMost((pages.size - 1).coerceAtLeast(0))
+            )
         }
     }
 
@@ -279,20 +417,27 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
         if (matchIndices.isEmpty()) return
         val next = (i % matchIndices.size + matchIndices.size) % matchIndices.size
         currentMatch = next
-        scope.launch { listState.scrollToItem(matchIndices[next] + 1) }
+        jumpToPara(matchIndices[next])
+    }
+
+    // 当前段：滚动模式看列表首项，仿真模式看当前页的第一个段落块
+    val currentParaIdx = if (pageMode == PageTurnMode.PAGE) {
+        pages.getOrNull(pagerState.currentPage)?.chunks
+            ?.firstOrNull { it.paraIdx >= 0 }?.paraIdx ?: 0
+    } else {
+        (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
     }
 
     fun toggleBookmark() {
-        val paraIdx = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+        val paraIdx = currentParaIdx
         val updated = bookmarks.toMutableSet()
         if (updated.contains(paraIdx)) updated.remove(paraIdx) else updated.add(paraIdx)
         bookmarks = updated
         saveBookmarks(context, item.id, updated)
-        saveLastPosition(context, item.id, listState.firstVisibleItemIndex)
+        saveLastPosition(context, item.id, paraIdx + 1)
     }
 
-    val firstParaIdx = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
-    val isBookmarked = bookmarks.contains(firstParaIdx)
+    val isBookmarked = bookmarks.contains(currentParaIdx)
 
     // 听书状态（TtsReader 是进程级单例，离开页面再回来还能接着控）
     val ttsActive = TtsReader.isActive && TtsReader.currentBook?.id == item.id
@@ -300,15 +445,59 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     val ttsSent = TtsReader.currentSent
 
     // 跟读：读到哪滚到哪；当前段已经在屏幕上就不动，免得来回跳
-    LaunchedEffect(ttsActive, ttsPara, ttsSent) {
+    LaunchedEffect(ttsActive, ttsPara, ttsSent, pageMode, pages) {
         if (ttsActive && ttsPara in paragraphs.indices) {
-            val pos = ttsPara + 1
-            val visible = listState.layoutInfo.visibleItemsInfo
-            val first = visible.firstOrNull()?.index ?: 0
-            val last = visible.lastOrNull()?.index ?: 0
-            if (pos < first || pos > last) {
-                listState.scrollToItem(pos)
+            if (pageMode == PageTurnMode.PAGE) {
+                if (pages.isNotEmpty()) {
+                    val page = pageOfPara(pages, ttsPara)
+                    if (page != pagerState.currentPage) {
+                        pagerState.animateScrollToPage(page)
+                    }
+                }
+            } else {
+                val pos = ttsPara + 1
+                val visible = listState.layoutInfo.visibleItemsInfo
+                val first = visible.firstOrNull()?.index ?: 0
+                val last = visible.lastOrNull()?.index ?: 0
+                if (pos < first || pos > last) {
+                    listState.scrollToItem(pos)
+                }
             }
+        }
+    }
+
+    // 锚定段落：仿真模式下翻页时记下来，滚动模式下滚到哪记哪；
+    // 字号/简繁一改页数就变，靠它回到读到的地方。
+    LaunchedEffect(pagerState.currentPage, pageMode) {
+        if (pageMode == PageTurnMode.PAGE) {
+            pages.getOrNull(pagerState.currentPage)?.chunks
+                ?.firstOrNull { it.paraIdx >= 0 }?.paraIdx?.let { anchorPara = it }
+        }
+    }
+    LaunchedEffect(listState.firstVisibleItemIndex, pageMode) {
+        if (pageMode == PageTurnMode.SCROLL) {
+            anchorPara = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+        }
+    }
+
+    // 分页结果出来/变了：先把待跳转的段落跳过去，否则回到锚定段落所在的页
+    LaunchedEffect(pages, pageMode, pendingJumpPara) {
+        if (pageMode != PageTurnMode.PAGE || pages.isEmpty()) return@LaunchedEffect
+        val target = pendingJumpPara ?: anchorPara
+        pendingJumpPara = null
+        val page = pageOfPara(pages, target)
+        if (page != pagerState.currentPage) pagerState.scrollToPage(page)
+    }
+
+    // 切回滚动模式：滚到锚定段落（第一次打开不触发，免得和恢复位置打架）
+    var firstModeRun by remember { mutableStateOf(true) }
+    LaunchedEffect(pageMode) {
+        if (firstModeRun) {
+            firstModeRun = false
+            return@LaunchedEffect
+        }
+        if (pageMode == PageTurnMode.SCROLL) {
+            listState.scrollToItem((anchorPara + 1).coerceIn(0, paragraphs.size))
         }
     }
 
@@ -370,7 +559,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                         if (ttsActive) {
                             TtsReader.togglePause()
                         } else {
-                            TtsReader.startReading(context, item, paragraphs, firstParaIdx)
+                            TtsReader.startReading(context, item, paragraphs, currentParaIdx)
                         }
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp)
@@ -455,83 +644,100 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                 )
             }
 
-            // 正文：标题头 + 一段一项 + 尾部提示
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                item {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = theme.text)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(item.category, fontSize = 13.sp, color = theme.muted)
-                        if (item.description.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(item.description, fontSize = 15.sp, color = theme.muted)
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Divider(color = theme.muted)
-                        Spacer(modifier = Modifier.height(16.dp))
-                    }
-                }
-                items(displayParagraphs.size) { idx ->
-                    val paragraph = displayParagraphs[idx]
-                    if (paragraph.isBlank()) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                    } else {
-                        // 批注笔记：整段是划线底色（半透明，盖在主题底色上）；
-                        // 长按弹出划线/写批注菜单，点有批注的段落直接打开批注看/改。
-                        // 搜索命中词和听书跟读句子的金色底是标在字上的，叠在段落底色上面。
-                        val entry = notesMap[idx]
-                        val highlightBg = HighlightColor.fromKey(entry?.color)?.background
-                        val noteText = entry?.note.orEmpty()
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(highlightBg ?: Color.Transparent)
-                                .combinedClickable(
-                                    onClick = {
-                                        if (noteText.isNotBlank()) editingNote = idx
-                                    },
-                                    onLongClick = { noteTarget = idx }
-                                )
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-                                Text(
-                                    text = when {
-                                        ttsActive && idx == ttsPara -> highlightTtsSentence(paragraph, ttsSent)
-                                        else -> highlightMatches(paragraph, if (showSearch) query else "")
-                                    },
-                                    fontSize = fontSize.sp,
-                                    lineHeight = lineHeight.sp,
-                                    color = theme.text
-                                )
-                                // 批注标记：点一下看/改这条批注
-                                if (noteText.isNotBlank()) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = "✎ $noteText",
-                                        fontSize = 13.sp,
-                                        color = Color(0xFF9A7B2D),
-                                        maxLines = 2,
-                                        modifier = Modifier.clickable { editingNote = idx }
-                                    )
+            // 正文：滚动模式是 LazyColumn 一段一项；仿真模式是一页一屏
+            if (pageMode == PageTurnMode.PAGE) {
+                PageTurner(
+                    pages = pages,
+                    pagerState = pagerState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .onSizeChanged { contentWidthPx = it.width; contentHeightPx = it.height },
+                    onPageTap = { x, w -> if (x < w / 2) prevPage() else nextPage() },
+                    pageContent = { page, _ ->
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            page.chunks.forEachIndexed { chunkPos, chunk ->
+                                if (chunkPos > 0) Spacer(modifier = Modifier.height(10.dp))
+                                when {
+                                    chunk.paraIdx == HEADER_PARA -> ReaderHeader(item, theme)
+                                    chunk.paraIdx == TAIL_PARA -> ReaderTail(theme)
+                                    else -> {
+                                        val paraIdx = chunk.paraIdx
+                                        val paragraph = displayParagraphs[paraIdx]
+                                        if (paragraph.isBlank()) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                        } else {
+                                            // 高亮先在整段上算好（搜索/跟读的下标都是整段的），
+                                            // 再按块切出来，Span 位置不会错
+                                            val fullAnnotated = when {
+                                                ttsActive && paraIdx == ttsPara ->
+                                                    highlightTtsSentence(paragraph, ttsSent)
+                                                else -> highlightMatches(
+                                                    paragraph, if (showSearch) query else ""
+                                                )
+                                            }
+                                            val chunkText = fullAnnotated.subSequence(
+                                                chunk.startChar, chunk.endChar
+                                            )
+                                            val entry = notesMap[paraIdx]
+                                            ParagraphBlock(
+                                                idx = paraIdx,
+                                                text = chunkText,
+                                                noteColor = HighlightColor.fromKey(entry?.color),
+                                                noteText = entry?.note.orEmpty(),
+                                                showNoteLine = chunk.endChar >= paragraph.length,
+                                                showTrailingGap = false,
+                                                fontSize = fontSize,
+                                                lineHeight = lineHeight,
+                                                textColor = theme.text,
+                                                onEditNote = { editingNote = paraIdx },
+                                                onLongPress = { noteTarget = paraIdx },
+                                                onTapTurn = { x, w ->
+                                                    if (x < w / 2) prevPage() else nextPage()
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
-                                Spacer(modifier = Modifier.height(10.dp))
                             }
                         }
                     }
-                }
-                item {
-                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Divider(color = theme.muted)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("正文已随 App 自带，离线也能读，无需下载。", fontSize = 12.sp, color = theme.muted)
-                        Spacer(modifier = Modifier.height(16.dp))
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    item { ReaderHeader(item, theme) }
+                    items(displayParagraphs.size) { idx ->
+                        val paragraph = displayParagraphs[idx]
+                        if (paragraph.isBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                        } else {
+                            val fullAnnotated = when {
+                                ttsActive && idx == ttsPara -> highlightTtsSentence(paragraph, ttsSent)
+                                else -> highlightMatches(paragraph, if (showSearch) query else "")
+                            }
+                            val entry = notesMap[idx]
+                            ParagraphBlock(
+                                idx = idx,
+                                text = fullAnnotated,
+                                noteColor = HighlightColor.fromKey(entry?.color),
+                                noteText = entry?.note.orEmpty(),
+                                showNoteLine = true,
+                                showTrailingGap = true,
+                                fontSize = fontSize,
+                                lineHeight = lineHeight,
+                                textColor = theme.text,
+                                onEditNote = { editingNote = idx },
+                                onLongPress = { noteTarget = idx },
+                                onTapTurn = null
+                            )
+                        }
                     }
+                    item { ReaderTail(theme) }
                 }
             }
 
@@ -574,19 +780,36 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                 }
             }
 
-            // 翻页：只保留滚动模式，按一屏的高度上下滚
+            // 翻页：滚动模式按一屏的高度上下滚；仿真模式左右翻页，中间显示第几页
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedButton(onClick = {
-                    scope.launch { listState.animateScrollBy(-viewportPx) }
-                }) { Text("上一页", fontSize = 14.sp) }
-                OutlinedButton(onClick = {
-                    scope.launch { listState.animateScrollBy(viewportPx) }
-                }) { Text("下一页", fontSize = 14.sp) }
+                if (pageMode == PageTurnMode.PAGE) {
+                    OutlinedButton(
+                        onClick = { prevPage() },
+                        enabled = pagerState.currentPage > 0
+                    ) { Text("上一页", fontSize = 14.sp) }
+                    Text(
+                        "第 ${pagerState.currentPage + 1} / ${pages.size} 页",
+                        fontSize = 13.sp,
+                        color = theme.muted
+                    )
+                    OutlinedButton(
+                        onClick = { nextPage() },
+                        enabled = pagerState.currentPage < pages.size - 1
+                    ) { Text("下一页", fontSize = 14.sp) }
+                } else {
+                    OutlinedButton(onClick = {
+                        scope.launch { listState.animateScrollBy(-viewportPx) }
+                    }) { Text("上一页", fontSize = 14.sp) }
+                    OutlinedButton(onClick = {
+                        scope.launch { listState.animateScrollBy(viewportPx) }
+                    }) { Text("下一页", fontSize = 14.sp) }
+                }
             }
         }
     }
@@ -637,6 +860,15 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                             saveScriptMode(context, scriptMode)
                         }
                     )
+                    OptionRow(
+                        label = "翻页方式",
+                        options = PageTurnMode.values().map { it.label },
+                        selected = pageMode.ordinal,
+                        onSelect = {
+                            pageMode = PageTurnMode.values()[it]
+                            savePageTurnMode(context, pageMode)
+                        }
+                    )
                 }
             }
         )
@@ -659,7 +891,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                             TextButton(
                                 onClick = {
                                     showToc = false
-                                    scope.launch { listState.scrollToItem(paraIdx + 1) }
+                                    jumpToPara(paraIdx)
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -701,7 +933,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                                 TextButton(
                                     onClick = {
                                         showBookmarks = false
-                                        scope.launch { listState.scrollToItem(paraIdx + 1) }
+                                        jumpToPara(paraIdx)
                                     },
                                     modifier = Modifier.weight(1f)
                                 ) {
@@ -776,7 +1008,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             muted = theme.muted,
             onJump = { paraIdx ->
                 showMyNotes = false
-                scope.launch { listState.scrollToItem(paraIdx + 1) }
+                jumpToPara(paraIdx)
             },
             onDelete = { paraIdx ->
                 notesStore.removeEntry(item.id, paraIdx)
@@ -876,6 +1108,105 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             vocab = vocab,
             onDismiss = { showLookup = false }
         )
+    }
+}
+
+/** 书头：标题 + 分类 + 简介（滚动模式和仿真模式共用；仿真模式下页眉高度按它量）。 */
+@Composable
+private fun ReaderHeader(item: CatalogItem, theme: ReaderTheme) {
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = theme.text)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(item.category, fontSize = 13.sp, color = theme.muted)
+        if (item.description.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(item.description, fontSize = 15.sp, color = theme.muted)
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Divider(color = theme.muted)
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+/** 书尾提示（滚动模式和仿真模式共用）。 */
+@Composable
+private fun ReaderTail(theme: ReaderTheme) {
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Spacer(modifier = Modifier.height(16.dp))
+        Divider(color = theme.muted)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("正文已随 App 自带，离线也能读，无需下载。", fontSize = 12.sp, color = theme.muted)
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+/**
+ * 一段正文（滚动模式和仿真模式共用）。
+ * 批注笔记：整段是划线底色（半透明，盖在主题底色上）；
+ * 搜索命中词和听书跟读句子的金色底是标在字上的，叠在段落底色上面。
+ * 滚动模式：点按/长按走 combinedClickable（点有批注的段落看批注，长按出批注菜单）。
+ * 仿真模式：点按分两半翻页（左半边上一页、右半边下一页），长按还是批注菜单；
+ * 有批注的段落点按先看批注，不翻页。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ParagraphBlock(
+    idx: Int,
+    text: AnnotatedString,
+    noteColor: HighlightColor?,
+    noteText: String,
+    showNoteLine: Boolean,
+    showTrailingGap: Boolean,
+    fontSize: Int,
+    lineHeight: Float,
+    textColor: Color,
+    onEditNote: () -> Unit,
+    onLongPress: () -> Unit,
+    onTapTurn: ((tapX: Float, width: Float) -> Unit)? = null
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(noteColor?.background ?: Color.Transparent)
+            .then(
+                if (onTapTurn != null) {
+                    Modifier.pointerInput(idx, text) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                if (noteText.isNotBlank()) onEditNote()
+                                else onTapTurn(offset.x, size.width.toFloat())
+                            },
+                            onLongPress = { onLongPress() }
+                        )
+                    }
+                } else {
+                    Modifier.combinedClickable(
+                        onClick = { if (noteText.isNotBlank()) onEditNote() },
+                        onLongClick = onLongPress
+                    )
+                }
+            )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+            Text(
+                text = text,
+                fontSize = fontSize.sp,
+                lineHeight = lineHeight.sp,
+                color = textColor
+            )
+            // 批注标记：点一下看/改这条批注
+            if (showNoteLine && noteText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "✎ $noteText",
+                    fontSize = 13.sp,
+                    color = Color(0xFF9A7B2D),
+                    maxLines = 2,
+                    modifier = Modifier.clickable { onEditNote() }
+                )
+            }
+            if (showTrailingGap) Spacer(modifier = Modifier.height(10.dp))
+        }
     }
 }
 

@@ -74,7 +74,7 @@ object AudioPlayer {
     }
 
     private fun applySpeed() {
-        if (speed == 1f) return
+        // 1.0x 也要调：播着从 0.75x 切回 1.0x 时不调会留在 0.75x，标签却显示 1.0x
         try {
             val p = player ?: return
             p.playbackParams = p.playbackParams.setSpeed(speed)
@@ -92,6 +92,17 @@ object AudioPlayer {
     fun cycleMode() {
         val values = PlayMode.values()
         mode = values[(values.indexOf(mode) + 1).mod(values.size)]
+    }
+
+    /**
+     * 播音频前先停掉听书：听书和音频不能同时出声（双向互停的另一半）。
+     * 不会循环：TtsReader.stop() 只改 TtsReader 自己的状态（停 TTS 引擎、
+     * 清朗读状态、撤通知），不会回头调 AudioPlayer；反过来
+     * TtsReader.startReading() 里调 AudioPlayer.stopPlayback() 也只改
+     * AudioPlayer 自己的状态。两边都是单向的状态清理，没有互相触发的回调。
+     */
+    private fun stopTtsIfReading() {
+        if (TtsReader.isActive) TtsReader.stop()
     }
 
     /** 开始播一首。同一首且已准备好时不重复准备，直接恢复。 */
@@ -143,6 +154,8 @@ object AudioPlayer {
     }
 
     private fun startPlayback() {
+        // 真正要出声了才停听书：只打开远程音频页看看（autoStart=false，只准备不播）时别停朗读
+        stopTtsIfReading()
         try {
             playerOrCreate().start()
         } catch (_: Exception) {
@@ -158,6 +171,8 @@ object AudioPlayer {
     fun resume() {
         val p = player ?: return
         if (currentItem == null) return
+        // 从通知栏 / 迷你条点“继续”也会走到这里：先停听书
+        stopTtsIfReading()
         try {
             if (status == "已播完") {
                 p.seekTo(0)
@@ -220,6 +235,9 @@ object AudioPlayer {
     fun next() {
         val item = currentItem ?: return
         if (mode == PlayMode.SINGLE || queue.size <= 1) {
+            // 单曲循环 / 只有一首：直接从头播，不走 play()，这里也要先停听书
+            // （player 为空时根本播不起来，就别停听书）
+            if (player != null) stopTtsIfReading()
             try {
                 player?.seekTo(0)
                 player?.start()

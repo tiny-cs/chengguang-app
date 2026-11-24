@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -62,7 +63,8 @@ import java.net.URLEncoder
  * - 英文单词：dictionaryapi.dev（音标 + 释义），再附一行 MyMemory 的英→中翻译；
  * - 中文、或英文短语（词典接口只认单个词）：MyMemory 翻译。
  * 生词本只存在这台手机上（SharedPreferences "chengguang_vocab"），不动服务器。
- * 复习模式、导出这次不做。
+ * 复习模式：生词本页点“复习”，打乱顺序一张一张过；导出：分享 Markdown / TXT /
+ * 复制全文（分享和复制复用 Notes.kt 的 shareNotesText / copyNotesText）。
  */
 
 private const val VOCAB_PREFS = "chengguang_vocab"
@@ -444,66 +446,165 @@ fun LookupDialog(
 
 // ---------- 生词本页 ----------
 
-/** 生词本页：列表按加入时间倒序，点一条重新查，每条可删。 */
+// ---------- 导出 ----------
+
+/** 导出 Markdown：标题 + 每个词 + 释义 + 来自哪本书，按加入时间倒序。 */
+fun buildVocabExportMarkdown(entries: List<VocabEntry>): String {
+    val sb = StringBuilder()
+    sb.append("# 城光生词本\n\n")
+    sb.append("共 ").append(entries.size).append(" 个\n\n")
+    entries.forEach { entry ->
+        sb.append("## ").append(entry.word).append("\n\n")
+        if (entry.meaning.isNotBlank()) sb.append(entry.meaning).append("\n\n")
+        if (entry.bookTitle.isNotBlank()) sb.append("来自《").append(entry.bookTitle).append("》\n\n")
+        sb.append("---\n\n")
+    }
+    return sb.toString().trimEnd() + "\n"
+}
+
+/** 导出 TXT：和 Markdown 一样的内容，去掉 #、--- 这些标记。 */
+fun buildVocabExportText(entries: List<VocabEntry>): String {
+    val sb = StringBuilder()
+    sb.append("城光生词本（共 ").append(entries.size).append(" 个）\n\n")
+    entries.forEach { entry ->
+        sb.append(entry.word).append("\n")
+        if (entry.meaning.isNotBlank()) sb.append(entry.meaning).append("\n")
+        if (entry.bookTitle.isNotBlank()) sb.append("来自《").append(entry.bookTitle).append("》\n")
+        sb.append("\n")
+    }
+    return sb.toString().trimEnd() + "\n"
+}
+
+// ---------- 生词本页 ----------
+
+/** 生词本页：列表按加入时间倒序，点一条重新查，每条可删；顶部有复习和导出。 */
 @Composable
 fun VocabScreen(vocab: VocabStore) {
+    val context = LocalContext.current
     val entries = vocab.entries()
     var lookupTarget by remember { mutableStateOf<VocabEntry?>(null) }
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            "只存在这台手机上。",
-            fontSize = 13.sp,
-            color = Color.Gray,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-        )
-        if (entries.isEmpty()) {
-            Text(
-                "生词本还是空的。在书里点“查词”，查到的词可以收进来。",
-                fontSize = 14.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(horizontal = 16.dp)
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+    var reviewing by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
+    var copiedHint by remember { mutableStateOf(false) }
+    // 导出文本随生词本内容变（删了词也要跟着变），无条件 remember，别放进 if 里
+    val mdText = remember(entries) { buildVocabExportMarkdown(entries) }
+    val txtText = remember(entries) { buildVocabExportText(entries) }
+
+    if (reviewing) {
+        VocabReviewScreen(entries = entries, onExit = { reviewing = false })
+    } else {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(entries, key = { it.word.lowercase() }) { entry ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { lookupTarget = entry }
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                Text(
+                    "只存在这台手机上。",
+                    fontSize = 13.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = { reviewing = true },
+                    enabled = entries.isNotEmpty(),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) { Text("复习", fontSize = 13.sp) }
+                OutlinedButton(
+                    onClick = {
+                        copiedHint = false
+                        showExport = true
+                    },
+                    enabled = entries.isNotEmpty(),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) { Text("导出", fontSize = 13.sp) }
+            }
+            if (entries.isEmpty()) {
+                Text(
+                    "生词本还是空的。在书里点“查词”，查到的词可以收进来。",
+                    fontSize = 14.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(entries, key = { it.word.lowercase() }) { entry ->
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(entry.word, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(entry.meaning, fontSize = 14.sp, color = Color.DarkGray)
-                                if (entry.bookTitle.isNotBlank()) {
-                                    Text(
-                                        "来自《${entry.bookTitle}》",
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
-                                    )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { lookupTarget = entry }
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(entry.word, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(entry.meaning, fontSize = 14.sp, color = Color.DarkGray)
+                                    if (entry.bookTitle.isNotBlank()) {
+                                        Text(
+                                            "来自《${entry.bookTitle}》",
+                                            fontSize = 12.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
                                 }
+                                TextButton(
+                                    onClick = { vocab.remove(entry.word) },
+                                    contentPadding = PaddingValues(horizontal = 4.dp)
+                                ) { Text("删除", fontSize = 13.sp) }
                             }
-                            TextButton(
-                                onClick = { vocab.remove(entry.word) },
-                                contentPadding = PaddingValues(horizontal = 4.dp)
-                            ) { Text("删除", fontSize = 13.sp) }
                         }
                     }
+                    item { Spacer(modifier = Modifier.height(12.dp)) }
                 }
-                item { Spacer(modifier = Modifier.height(12.dp)) }
             }
         }
+    }
+    // 导出选择：分享 Markdown / 分享 TXT / 复制全文（分享和复制复用 Notes.kt 的）
+    if (showExport) {
+        AlertDialog(
+            onDismissRequest = { showExport = false },
+            confirmButton = {
+                TextButton(onClick = { showExport = false }) { Text("关闭") }
+            },
+            title = { Text("导出生词本") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("共 ${entries.size} 个词，按加入时间倒序。", fontSize = 14.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { shareNotesText(context, mdText, "城光生词本", "分享生词本") },
+                            contentPadding = PaddingValues(horizontal = 8.dp)
+                        ) { Text("分享 Markdown", fontSize = 12.sp) }
+                        OutlinedButton(
+                            onClick = { shareNotesText(context, txtText, "城光生词本", "分享生词本") },
+                            contentPadding = PaddingValues(horizontal = 8.dp)
+                        ) { Text("分享 TXT", fontSize = 12.sp) }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            copyNotesText(context, mdText, "城光生词本")
+                            copiedHint = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("复制全文", fontSize = 12.sp) }
+                    if (copiedHint) {
+                        Text("已复制到剪贴板", fontSize = 12.sp, color = Color.Gray)
+                    }
+                }
+            }
+        )
     }
     // 点词条：打开查词对话框并预填这个词，点“查”能再查一次
     lookupTarget?.let { entry ->
@@ -513,5 +614,143 @@ fun VocabScreen(vocab: VocabStore) {
             vocab = vocab,
             onDismiss = { lookupTarget = null }
         )
+    }
+}
+
+// ---------- 复习模式 ----------
+
+/**
+ * 复习模式：一次一张卡片，先只显示词，点卡片（或“看释义”）翻出释义和来源；
+ * “认识”/“不认识”都进下一个；看完给统计。顺序每次打乱，一次复习里不重复、
+ * 不漏词；复习不改生词本里的数据（不删词、不改顺序），纯粹看一遍。
+ */
+@Composable
+fun VocabReviewScreen(entries: List<VocabEntry>, onExit: () -> Unit) {
+    var order by remember { mutableStateOf(entries.shuffled()) }
+    var index by remember { mutableStateOf(0) }
+    var showMeaning by remember { mutableStateOf(false) }
+    var knownCount by remember { mutableStateOf(0) }
+    var finished by remember { mutableStateOf(false) }
+
+    // 防一手：空生词本进不来复习（按钮是禁用的），万一还是空了别崩
+    if (order.isEmpty()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("生词本还是空的，先去查几个词收进来。", fontSize = 15.sp, color = Color.Gray)
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(onClick = onExit) { Text("返回", fontSize = 14.sp) }
+        }
+        return
+    }
+
+    fun next(known: Boolean) {
+        if (known) knownCount++
+        if (index + 1 < order.size) {
+            index++
+            showMeaning = false
+        } else {
+            finished = true
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (finished) "复习完了" else "第 ${index + 1} / ${order.size} 个",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onExit) { Text("退出", fontSize = 13.sp) }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        if (finished) {
+            Text(
+                "本次看了 ${order.size} 个，认识 $knownCount 个",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                if (knownCount == order.size) "全都认识，记性真好！"
+                else "不认识的还在生词本里，下次再过一遍。",
+                fontSize = 14.sp,
+                color = Color.Gray
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(onClick = {
+                order = entries.shuffled()
+                index = 0
+                showMeaning = false
+                knownCount = 0
+                finished = false
+            }) { Text("再来一次") }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(onClick = onExit) { Text("返回", fontSize = 14.sp) }
+        } else {
+            val entry = order[index]
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clickable { showMeaning = !showMeaning }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(entry.word, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    if (showMeaning) {
+                        Text(entry.meaning, fontSize = 16.sp, color = Color.DarkGray)
+                        if (entry.bookTitle.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("来自《${entry.bookTitle}》", fontSize = 13.sp, color = Color.Gray)
+                        }
+                    } else {
+                        Text("点一下卡片看释义", fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            if (!showMeaning) {
+                OutlinedButton(
+                    onClick = { showMeaning = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("看释义", fontSize = 14.sp) }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { next(false) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("不认识", fontSize = 15.sp) }
+                Button(
+                    onClick = { next(true) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("认识", fontSize = 15.sp) }
+            }
+        }
     }
 }
