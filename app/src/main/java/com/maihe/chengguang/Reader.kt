@@ -636,7 +636,7 @@ fun ReaderScreen(item: CatalogItem) {
                     label = "语速",
                     options = TtsReader.SPEED_LABELS,
                     selected = TtsReader.SPEEDS.indexOf(TtsReader.speed).coerceAtLeast(0),
-                    onSelect = { TtsReader.setSpeed(TtsReader.SPEEDS[it]) }
+                    onSelect = { TtsReader.updateSpeed(TtsReader.SPEEDS[it]) }
                 )
             }
         )
@@ -700,7 +700,7 @@ fun ReaderScreen(item: CatalogItem) {
                     label = "定时",
                     options = TtsReader.SLEEP_LABELS,
                     selected = TtsReader.SLEEP_OPTIONS.indexOf(TtsReader.sleepMinutes).coerceAtLeast(0),
-                    onSelect = { TtsReader.setSleepMinutes(TtsReader.SLEEP_OPTIONS[it]) }
+                    onSelect = { TtsReader.updateSleepMinutes(TtsReader.SLEEP_OPTIONS[it]) }
                 )
             }
         )

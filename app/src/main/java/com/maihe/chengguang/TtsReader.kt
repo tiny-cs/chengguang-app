@@ -163,7 +163,8 @@ object TtsReader {
         sleepMinutes = prefs.getInt("tts_sleep_minutes", 0).let { if (it in SLEEP_OPTIONS) it else 0 }
     }
 
-    fun setSpeed(value: Float) {
+    // 注意：不能叫 setSpeed——var speed 自带的 setter 已经占了 setSpeed(F)V 这个 JVM 签名，同名函数会编译冲突
+    fun updateSpeed(value: Float) {
         val v = if (value in SPEEDS) value else 1f
         speed = v
         appContext?.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
@@ -181,7 +182,8 @@ object TtsReader {
         if (isReading) restartCurrent()
     }
 
-    fun setSleepMinutes(minutes: Int) {
+    // 同上：不能叫 setSleepMinutes，var sleepMinutes 自带的 setter 已占了这个签名
+    fun updateSleepMinutes(minutes: Int) {
         val value = if (minutes in SLEEP_OPTIONS) minutes else 0
         sleepMinutes = value
         appContext?.getSharedPreferences("chengguang_reader", Context.MODE_PRIVATE)
