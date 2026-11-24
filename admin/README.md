@@ -39,11 +39,13 @@ admin/
 | POST | `/api/upload/abort` | 取消未完成的分块上传（要登录） |
 | POST | `/api/upload/attachment` | 讲章附件上传（要登录）：multipart `{itemId, file}`，只收 PDF、PPT、PPTX，≤100MB，存 `media/<id>-slides.<ext>`，写回 `pdfUrl` |
 | DELETE | `/api/items/:id/attachment` | 删讲章附件（要登录）：删 R2 文件并清空 `pdfUrl` |
+| POST | `/api/upload/sheet` | 歌谱图片上传（要登录）：multipart `{itemId, file}`，只收 JPG、PNG、WebP，≤20MB，存 `media/<id>-sheet.<ext>`，写回 `imageUrl` |
+| DELETE | `/api/items/:id/sheet` | 删歌谱图片（要登录）：删 R2 文件并清空 `imageUrl` |
 | POST | `/api/feedback` | 读者提建议（公开，不用登录）：`{text, contact?}` → 存 R2 `feedback.json`，最多 500 条 |
 | GET | `/api/feedback` | 读者建议列表（要登录） |
 | DELETE | `/api/feedback/:id` | 删一条建议（要登录） |
-| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文 / 讲章链接 `pdfUrl`（要登录） |
-| DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（含讲章附件）（要登录） |
+| PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文 / 讲章链接 `pdfUrl` / 歌谱链接 `imageUrl`（要登录） |
+| DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（含讲章附件和歌谱图片）（要登录） |
 
 ## 上传规则
 
@@ -59,6 +61,11 @@ admin/
 - 音频 / 视频走分块上传：浏览器把文件切成 10MB 一块、4 块并行传到 Worker，Worker 经 R2 分块上传接口写进桶，
   绕过 Workers 单次 100MB 请求体上限。音频上限 500MB，视频上限 2GB。
   书籍 / 诗歌的附件仍走旧的单次上传（上限 100MB）。
+- 敬拜赞美：一首歌 = 一个 MP3 + 一份歌谱。带音频文件上传就是歌（type `audio`），只填文字就是诗（type `poem`，走阅读页）。
+  歌词写在正文框里，App 音频页播放器下面显示；歌谱图片一首一张（JPG、PNG、WebP，≤20MB），
+  上传页只有选了“敬拜赞美”才出现“歌谱图片”入口，条目建好之后再传，存在 `media/<id>-sheet.<ext>`，
+  App 音频页里显示，点一下全屏看（双指缩放），看过一次的图存在手机缓存里，没网也能打开。
+  歌的 MP3 走单次上传（≤100MB），不走分块上传；删整条内容时歌谱文件一起删。
 - 讲章附件：传音频/视频时可同时选一个讲章文件（PDF 最好，也收 PPT、PPTX，≤100MB），
   挂在同条内容上，App 音频/视频详情页里有“查看讲章 / 下载讲章”。PDF 在 App 里直接打开看
   （内置阅读器，第一次打开会下载到缓存，之后离线也能看）；PPT 请先在 PowerPoint / WPS 里

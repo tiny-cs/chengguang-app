@@ -28,6 +28,9 @@ const CATALOG_KEY = "catalog.json";
 const SLIDES_EXTS = ["pdf", "ppt", "pptx"]; // 讲章附件：PDF 优先，也收 PPT/PPTX（App 里在线预览）
 const MAX_SLIDES_BYTES = 100 * 1024 * 1024; // 讲章单次上传上限 100MB
 const SLIDES_CONTENT_TYPE = { pdf: "application/pdf", ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+const SHEET_EXTS = ["jpg", "jpeg", "png", "webp"]; // 歌谱图片：敬拜赞美一首歌一张
+const MAX_SHEET_BYTES = 20 * 1024 * 1024; // 谱图单次上传上限 20MB
+const SHEET_CONTENT_TYPE = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
 const FEEDBACK_KEY = "feedback.json"; // 读者建议：App“给开发者建议”提交的，只管理员能看
 const MAX_FEEDBACK_CHARS = 2000;
 
@@ -55,6 +58,7 @@ function extOf(name) {
   return m ? m[1] : "";
 }
 function slidesKey(itemId, ext) { return "media/" + itemId + "-slides." + ext; }
+function sheetKey(itemId, ext) { return "media/" + itemId + "-sheet." + ext; }
 function keyFromFileUrl(u) {
   if (!u || !u.includes("/file/media/")) return "";
   const k = decodeURIComponent(u.split("/file/")[1] || "");
@@ -352,7 +356,7 @@ export default {
       const itemId = key.slice("media/".length, -("." + ext).length);
       const item = {
         id: itemId, title, category, type,
-        url: url.origin + "/file/" + key, pdfUrl: "", duration,
+        url: url.origin + "/file/" + key, pdfUrl: "", imageUrl: "", duration,
         size: humanSize(fileSize), description, content: "",
         status: "published", uploadedBy: "admin", createdAt: new Date().toISOString(),
       };
@@ -422,10 +426,14 @@ export default {
         if (!file || file.size === 0) return err("音频/视频请先选一个文件");
         type = mediaTypeForExt(extOf(file.name));
         if (!type) return err("不支持的文件格式：请传音频（" + AUDIO_EXTS.join("、") + "）或视频（" + VIDEO_EXTS.join("、") + "）");
+      } else if (category === "敬拜赞美" && file && file.size > 0) {
+        // 敬拜赞美：带音频文件就是歌（audio），只填文字就是诗（poem）；非音频文件直接报错，别悄悄存成诗
+        type = mediaTypeForExt(extOf(file.name));
+        if (type !== "audio") return err("敬拜赞美只收音频文件（" + AUDIO_EXTS.join("、") + "），或只填歌词不传文件");
       }
       const now = new Date().toISOString();
       const item = {
-        id: newId(type), title, category, type, url: "", pdfUrl: "", duration,
+        id: newId(type), title, category, type, url: "", pdfUrl: "", imageUrl: "", duration,
         size: "", description, content: "",
         status: "published", uploadedBy: "admin", createdAt: now,
       };
@@ -444,6 +452,7 @@ export default {
         });
         item.url = url.origin + "/file/" + key;
         item.size = humanSize(file.size);
+        if (category === "敬拜赞美") item.content = content; // 歌的歌词存在 content 里，音频页下面显示
         if (!duration) item.duration = "";
       }
       // 书籍/诗歌如附了文件（PDF 等），也存 R2，链接放 url
@@ -487,6 +496,7 @@ export default {
       if (body.duration !== undefined) item.duration = String(body.duration);
       if (body.content !== undefined) item.content = String(body.content);
       if (typeof body.pdfUrl === "string") item.pdfUrl = body.pdfUrl;
+      if (typeof body.imageUrl === "string") item.imageUrl = body.imageUrl;
       await writeCatalog(env, items);
       return json({ ok: true, item });
     }
@@ -527,6 +537,42 @@ export default {
       return json({ ok: true, item });
     }
 
+    // 歌谱图片：上传（要登录）+ 删除（要登录）。一首歌一张，jpg / png / webp，≤20MB。
+    if (path === "/api/upload/sheet" && request.method === "POST") {
+      let form;
+      try { form = await request.formData(); } catch (e) { return err("表单解析失败"); }
+      const itemId = String(form.get("itemId") || "");
+      const file = form.get("file");
+      if (!itemId) return err("缺少 itemId");
+      if (!file || file.size === 0) return err("请先选一张歌谱图片");
+      if (file.size > MAX_SHEET_BYTES) return err("歌谱图片超过 20MB");
+      const ext = extOf(file.name);
+      if (!SHEET_EXTS.includes(ext)) return err("歌谱只收 JPG、PNG、WebP 图片");
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === itemId);
+      if (!item) return err("找不到这条内容", 404);
+      const key = sheetKey(itemId, ext);
+      const oldKey = keyFromFileUrl(item.imageUrl || "");
+      if (oldKey && oldKey !== key) await env.CHENGGUANG_BUCKET.delete(oldKey);
+      await env.CHENGGUANG_BUCKET.put(key, file.stream(), {
+        httpMetadata: { contentType: SHEET_CONTENT_TYPE[ext] || "image/jpeg" },
+      });
+      item.imageUrl = url.origin + "/file/" + key;
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+    if (path.startsWith("/api/items/") && path.endsWith("/sheet") && request.method === "DELETE") {
+      const id = decodeURIComponent(path.slice("/api/items/".length, -"/sheet".length));
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === id);
+      if (!item) return err("找不到这条内容", 404);
+      const oldKey = keyFromFileUrl(item.imageUrl || "");
+      if (oldKey) await env.CHENGGUANG_BUCKET.delete(oldKey);
+      item.imageUrl = "";
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
     // 删除：目录里删掉，R2 里的文件也删掉
     if (path.startsWith("/api/items/") && request.method === "DELETE") {
       const id = decodeURIComponent(path.slice("/api/items/".length));
@@ -542,6 +588,10 @@ export default {
       if (item.pdfUrl) {
         const skey = keyFromFileUrl(item.pdfUrl);
         if (skey) await env.CHENGGUANG_BUCKET.delete(skey);
+      }
+      if (item.imageUrl) {
+        const shkey = keyFromFileUrl(item.imageUrl);
+        if (shkey) await env.CHENGGUANG_BUCKET.delete(shkey);
       }
       return json({ ok: true });
     }
@@ -606,7 +656,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     </select>
     <label>简介</label><input id="description" placeholder="一句话简介">
     <div id="textBlock">
-      <label>正文（书籍 / 诗歌）</label>
+      <label id="contentLabel">正文（书籍 / 诗歌）</label>
       <textarea id="content" placeholder="把正文粘贴在这里，多段换行即可"></textarea>
       <div id="docBlock">
         <label>或从文件导入正文（TXT / PDF / Word .docx / EPUB，自动提取文字填到上面）</label>
@@ -614,6 +664,14 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
         <div id="docImportMsg" class="muted" style="margin-top:4px"></div>
         <p class="muted">老格式 .doc 不支持，请在 Word 里另存为 .docx 再传。PDF 是扫描图片的提不出文字，请用文字版 PDF。EPUB 按章节顺序提正文，超过 100 万字会自动截断到 100 万字。TXT 会自动识别 UTF-8 / GBK 编码。</p>
       </div>
+    </div>
+    <div id="worshipBlock" style="display:none">
+      <label>音频文件（歌）：MP3 等；不传就是纯文字诗歌</label>
+      <input type="file" id="songFile" accept=".mp3,.m4a,.wav,.ogg,.aac,.flac">
+      <label>歌谱图片（可选）：一首歌一张，jpg / png / webp，不超过 20MB</label>
+      <input type="file" id="sheetFile" accept=".jpg,.jpeg,.png,.webp">
+      <div id="sheetNow" class="muted" style="margin-top:4px"></div>
+      <button type="button" class="ghost" id="delSheetBtn" style="display:none;margin-top:6px" onclick="delSheet()">删除已有歌谱</button>
     </div>
     <div id="fileBlock" style="display:none">
       <label>音频或视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
@@ -651,8 +709,19 @@ function showMsg(t, id) { document.getElementById(id || "msg").textContent = t |
 function onCategory() {
   var c = document.getElementById("category").value;
   var isMedia = (c === "主日信息" || c === "灵修信息" || c === "专题讲座");
+  var isWorship = (c === "敬拜赞美");
   document.getElementById("fileBlock").style.display = isMedia ? "block" : "none";
   document.getElementById("textBlock").style.display = isMedia ? "none" : "block";
+  document.getElementById("worshipBlock").style.display = isWorship ? "block" : "none";
+  document.getElementById("contentLabel").textContent = isWorship ? "歌词（文字格式的歌谱）" : "正文（书籍 / 诗歌）";
+  // 切栏目时清掉藏起来的那组文件选择，免得旧文件被误传到新栏目里
+  if (isWorship) {
+    document.getElementById("file").value = "";
+    document.getElementById("slidesFile").value = "";
+  } else {
+    document.getElementById("songFile").value = "";
+    document.getElementById("sheetFile").value = "";
+  }
 }
 async function login() {
   var r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -677,7 +746,7 @@ async function load() {
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
-    html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span>" + (it.pdfUrl ? "<br><span class='muted'>有讲章</span>" : "") + "</td>"
+    html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span>" + (it.pdfUrl ? "<br><span class='muted'>有讲章</span>" : "") + (it.imageUrl ? "<br><span class='muted'>有歌谱</span>" : "") + "</td>"
       + "<td>" + esc(it.category) + "</td><td>" + esc(it.size || "-") + "</td>"
       + "<td><button data-id='" + it.id + "' onclick='editItem(this.dataset.id)'>编辑</button> "
       + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>删除</button></td></tr>";
@@ -908,6 +977,12 @@ function resetForm() {
   if (slidesInput) slidesInput.value = "";
   document.getElementById("slidesNow").textContent = "";
   document.getElementById("delSlidesBtn").style.display = "none";
+  var songInput = document.getElementById("songFile");
+  if (songInput) songInput.value = "";
+  var sheetInput = document.getElementById("sheetFile");
+  if (sheetInput) sheetInput.value = "";
+  document.getElementById("sheetNow").textContent = "";
+  document.getElementById("delSheetBtn").style.display = "none";
   showMsg("", "msg2");
 }
 function editItem(id) {
@@ -928,6 +1003,13 @@ function editItem(id) {
   } else {
     document.getElementById("slidesNow").textContent = "";
     document.getElementById("delSlidesBtn").style.display = "none";
+  }
+  if (it.imageUrl) {
+    document.getElementById("sheetNow").textContent = "已有歌谱：" + it.imageUrl.split("/").pop();
+    document.getElementById("delSheetBtn").style.display = "inline-block";
+  } else {
+    document.getElementById("sheetNow").textContent = "";
+    document.getElementById("delSheetBtn").style.display = "none";
   }
   window.scrollTo(0, 0);
 }
@@ -950,6 +1032,11 @@ async function save() {
       var okS = await uploadAttachment(editId, sf);
       if (!okS) return;
     }
+    var sh = document.getElementById("sheetFile").files[0];
+    if (sh) {
+      var sheetErr = await uploadSheet(editId, sh);
+      if (sheetErr) { showMsg(sheetErr, "msg2"); return; }
+    }
     showMsg("已保存", "msg2"); resetForm(); load(); return;
   }
   var f = document.getElementById("file").files[0];
@@ -966,11 +1053,27 @@ async function save() {
   fd.append("description", document.getElementById("description").value);
   fd.append("duration", document.getElementById("duration").value);
   fd.append("content", document.getElementById("content").value);
-  if (f) fd.append("file", f);
+  if (f && cat !== "敬拜赞美") fd.append("file", f);
+  if (cat === "敬拜赞美") {
+    // 歌的 MP3 走 songFile（fileBlock 那个 file 口是给媒体栏目的，敬拜赞美不用它）
+    var songF = document.getElementById("songFile").files[0];
+    if (songF) fd.append("file", songF);
+  }
   showMsg("正在上传，请稍等…", "msg2");
   var r2 = await fetch("/api/upload", { method: "POST", body: fd });
   var d2 = await r2.json();
   if (!d2.ok) { showMsg(d2.error || "上传失败", "msg2"); return; }
+  // 谱图等条目建好之后再传（要 itemId）；歌已保存，谱图没传上去也不丢条目，
+  // 报错后提示用户点编辑再传
+  var shf = document.getElementById("sheetFile").files[0];
+  if (shf) {
+    var sheetErr2 = await uploadSheet(d2.item.id, shf);
+    if (sheetErr2) {
+      resetForm(); load();
+      showMsg("歌已保存，但歌谱没传上去：" + sheetErr2 + "。点编辑可以再传谱图。", "msg2");
+      return;
+    }
+  }
   showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
 }
 // 分块上传：init -> 4 块并行 POST（每块 5 分钟超时、最多 3 次重试）-> complete；中途失败就 abort 并报错
@@ -1102,6 +1205,28 @@ async function uploadAttachment(itemId, file) {
   var d = await r.json();
   if (!d.ok) { showMsg(d.error || "讲章上传失败", "msg2"); return false; }
   return true;
+}
+// 歌谱图片：条目建好之后再传（要 itemId）。成功返回 ""，失败返回中文错误（调用方显示出来，不静默丢掉）。
+async function uploadSheet(itemId, file) {
+  var fd = new FormData();
+  fd.append("itemId", itemId);
+  fd.append("file", file);
+  showMsg("正在上传歌谱，请稍等…", "msg2");
+  var r = await fetch("/api/upload/sheet", { method: "POST", body: fd });
+  var d = await r.json();
+  if (!d.ok) return d.error || "歌谱上传失败";
+  return "";
+}
+async function delSheet() {
+  var editId = document.getElementById("editId").value;
+  if (!editId) return;
+  if (!confirm("确定删除这首歌的歌谱吗？")) return;
+  var r = await fetch("/api/items/" + encodeURIComponent(editId) + "/sheet", { method: "DELETE" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "删除失败"); return; }
+  document.getElementById("sheetNow").textContent = "";
+  document.getElementById("delSheetBtn").style.display = "none";
+  load();
 }
 async function delSlides() {
   var editId = document.getElementById("editId").value;

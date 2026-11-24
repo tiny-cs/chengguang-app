@@ -5,6 +5,8 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Environment
@@ -12,7 +14,10 @@ import android.util.Rational
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,21 +57,34 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 
 @Composable
@@ -299,6 +317,156 @@ private fun downloadSlides(context: Context, item: CatalogItem, fileName: String
     }
 }
 
+/** 歌词：敬拜赞美的歌把歌词存在 content 里，有就显示在播放器下面；没内容的音频页面原样不动。 */
+@Composable
+fun LyricsSection(item: CatalogItem) {
+    if (item.content.isBlank()) return
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("歌词", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(item.content, fontSize = 15.sp)
+        }
+    }
+    Spacer(modifier = Modifier.height(16.dp))
+}
+
+/** 歌谱图片：一首歌一张，点一下全屏看（双指缩放、拖动平移）。缓存优先：看过一次的图下次没网也能打开。 */
+@Composable
+fun SheetSection(item: CatalogItem) {
+    if (item.imageUrl.isBlank()) return
+    val context = LocalContext.current
+    var bitmap by remember(item.id, item.imageUrl) { mutableStateOf<ImageBitmap?>(null) }
+    var loading by remember(item.id, item.imageUrl) { mutableStateOf(true) }
+    var failed by remember(item.id, item.imageUrl) { mutableStateOf(false) }
+    var fullscreen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(item.id, item.imageUrl) {
+        loading = true
+        failed = false
+        bitmap = null
+        val bmp = loadSheetBitmap(context, item)
+        if (bmp != null) bitmap = bmp.asImageBitmap() else failed = true
+        loading = false
+    }
+
+    val shown = bitmap
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("歌谱", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            when {
+                loading -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("歌谱加载中…", fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+                failed -> Text("歌谱加载失败，请检查网络后重试", fontSize = 14.sp, color = Color(0xFF8E4A2F))
+                shown != null -> {
+                    Image(
+                        bitmap = shown,
+                        contentDescription = "歌谱",
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier.fillMaxWidth().clickable { fullscreen = true }
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("点一下放大看", fontSize = 12.sp, color = Color.Gray)
+                }
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(16.dp))
+    if (fullscreen && shown != null) {
+        SheetFullscreen(shown) { fullscreen = false }
+    }
+}
+
+/** 歌谱全屏查看：双指缩放（1x–5x）、拖动平移；缩回 1x 时位置也回中。 */
+@Composable
+private fun SheetFullscreen(bitmap: ImageBitmap, onClose: () -> Unit) {
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    BackHandler { onClose() }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "歌谱",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offset.x,
+                        translationY = offset.y
+                    )
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val newScale = (scale * zoom).coerceIn(1f, 5f)
+                            scale = newScale
+                            offset = if (newScale <= 1f) Offset.Zero else offset + pan
+                        }
+                    }
+            )
+            OutlinedButton(
+                onClick = onClose,
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+            ) { Text("关闭", fontSize = 13.sp) }
+        }
+    }
+}
+
+/** 把谱图下到缓存（cacheDir/sheets/<id>.<ext>），下过一次的直接用，离线也能打开。失败返回 null（不报 Sentry）。 */
+private suspend fun loadSheetBitmap(context: Context, item: CatalogItem): Bitmap? {
+    return withContext(Dispatchers.IO) {
+        val ext = item.imageUrl.substringAfterLast(".", "").substringBefore("?").lowercase()
+            .takeIf { it.isNotEmpty() } ?: "jpg"
+        val dir = File(context.cacheDir, "sheets").apply { if (!exists()) mkdirs() }
+        val file = File(dir, item.id + "." + ext)
+        if (file.exists() && file.length() > 0) {
+            BitmapFactory.decodeFile(file.absolutePath)?.let { return@withContext it }
+            file.delete() // 缓存坏了就删掉，重新下载
+        }
+        var conn: HttpURLConnection? = null
+        try {
+            conn = (URL(item.imageUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15000
+                readTimeout = 15000
+                requestMethod = "GET"
+            }
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
+            conn.inputStream.use { input ->
+                FileOutputStream(file).use { out -> input.copyTo(out) }
+            }
+            if (file.length() == 0L) {
+                file.delete()
+                null
+            } else BitmapFactory.decodeFile(file.absolutePath)
+        } catch (_: Exception) {
+            file.delete()
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+}
+
 /** 播放模式：播完后做什么。单曲循环只重复这一首，其余在同栏目音频里切歌。 */
 enum class PlayMode(val label: String) {
     ORDER("顺序播放"), SINGLE("单曲循环"), LOOP_ALL("列表循环"), SHUFFLE("随机播放")
@@ -443,6 +611,8 @@ fun AudioDetail(
         Spacer(modifier = Modifier.height(8.dp))
         Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(20.dp))
+        LyricsSection(item)
+        SheetSection(item)
         DownloadSection(item, downloads)
         Spacer(modifier = Modifier.height(16.dp))
         SlidesSection(item, onViewPdf)

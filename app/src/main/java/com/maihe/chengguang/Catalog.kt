@@ -22,6 +22,7 @@ data class CatalogItem(
     val type: String, // book / poem / audio / video
     val url: String = "",
     val pdfUrl: String = "", // 讲章附件（PDF 优先，也可是 PPT）：音频/视频详情页里查看和下载；为空表示没有
+    val imageUrl: String = "", // 歌谱图片（敬拜赞美）：一首歌一张，走 /file/ 代理；为空表示没有
     val duration: String = "",
     val size: String = "",
     val description: String = "",
