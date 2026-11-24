@@ -93,6 +93,7 @@ sealed interface Route {
     data class Detail(val id: String) : Route
     data class Pdf(val url: String, val title: String) : Route
     data object Bookshelf : Route
+    data object Vocab : Route
 }
 
 class MainActivity : ComponentActivity() {
@@ -156,6 +157,7 @@ fun ChengguangApp() {
     }
     val downloads = remember { DownloadStore(context) }
     val bookshelf = remember { BookshelfStore(context) }
+    val vocab = remember { VocabStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
     val current = stack.last()
     // 视频全屏状态：视频页里切换，上面统一藏标题栏（全屏时标题栏没地方放）。
@@ -187,6 +189,7 @@ fun ChengguangApp() {
                                 is Route.Detail -> items.find { it.id == r.id }?.title ?: "城光"
                                 is Route.Pdf -> r.title
                                 is Route.Bookshelf -> "我的书架"
+                                is Route.Vocab -> "我的生词本"
                                 is Route.Category -> r.name
                                 Route.All -> "全部内容"
                                 Route.Mine -> "我的"
@@ -254,7 +257,9 @@ fun ChengguangApp() {
                 Route.Mine -> MineScreen(
                     items, downloads, bookshelf,
                     onItem = { go(Route.Detail(it.id)) },
-                    onBookshelf = { go(Route.Bookshelf) }
+                    onBookshelf = { go(Route.Bookshelf) },
+                    vocab = vocab,
+                    onVocab = { go(Route.Vocab) }
                 )
                 is Route.Category -> CategoryScreen(r.name, items, downloads, onItem = { go(Route.Detail(it.id)) })
                 is Route.Detail -> {
@@ -264,11 +269,13 @@ fun ChengguangApp() {
                         DetailScreen(item, downloads, bookshelf, siblings, onSelectItem = { id ->
                             stack[stack.lastIndex] = Route.Detail(id)
                         }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) },
-                            onFullscreenChange = { videoFullscreen = it })
+                            onFullscreenChange = { videoFullscreen = it },
+                            vocab = vocab)
                     } else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
                 is Route.Pdf -> PdfViewerScreen(r.url, r.title)
                 is Route.Bookshelf -> BookshelfScreen(bookshelf, items, onItem = { go(Route.Detail(it.id)) })
+                is Route.Vocab -> VocabScreen(vocab)
             }
         }
     }
@@ -475,10 +482,13 @@ fun MineScreen(
     downloads: DownloadStore,
     bookshelf: BookshelfStore,
     onItem: (CatalogItem) -> Unit,
-    onBookshelf: () -> Unit = {}
+    onBookshelf: () -> Unit = {},
+    vocab: VocabStore? = null,
+    onVocab: () -> Unit = {}
 ) {
     val downloaded = downloads.downloadedItems(items)
     val shelfCount = bookshelf.shelfItems(items).size
+    val vocabCount = vocab?.count() ?: 0
     val totalBytes = downloads.totalDownloadedBytes(items)
     val feedbackScope = rememberCoroutineScope()
     var feedbackText by remember { mutableStateOf("") }
@@ -530,6 +540,24 @@ fun MineScreen(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(onClick = onBookshelf) { Text("打开书架") }
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("我的生词本（$vocabCount 个）", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("查过的词收在这里，点一下可以再查。只存在这台手机上。", fontSize = 13.sp, color = Color.Gray)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onVocab) { Text("打开生词本") }
                 }
             }
         }

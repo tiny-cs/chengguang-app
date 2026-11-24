@@ -177,7 +177,7 @@ private fun highlightTtsSentence(paragraph: String, sentIdx: Int): AnnotatedStri
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
+fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: VocabStore? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -232,6 +232,9 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
     var noteTarget by remember { mutableStateOf<Int?>(null) } // 长按弹出的划线/批注菜单
     var editingNote by remember { mutableStateOf<Int?>(null) } // 写批注弹窗
     var showMyNotes by remember { mutableStateOf(false) } // 我的批注列表
+
+    // 词典翻译（二期第 6 块）：只对属灵书籍有效，诗歌是短文本，不做
+    var showLookup by remember { mutableStateOf(false) }
 
     // 打开时回到上次读到的地方（列表位置 1..N 才是正文段落，0 是标题头）
     LaunchedEffect(item.id) {
@@ -354,6 +357,13 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                 ) {
                     val noteCount = notesStore.entryCount(item.id)
                     Text(if (noteCount > 0) "我的批注（$noteCount）" else "我的批注", fontSize = 13.sp)
+                }
+                // 查词：只对属灵书籍有效（诗歌是短文本，不做）；不占长按，长按已经是批注菜单
+                if (item.type == "book" && vocab != null) {
+                    OutlinedButton(
+                        onClick = { showLookup = true },
+                        contentPadding = PaddingValues(horizontal = 10.dp)
+                    ) { Text("查词", fontSize = 13.sp) }
                 }
                 OutlinedButton(
                     onClick = {
@@ -855,6 +865,16 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                     onSelect = { TtsReader.updateSleepMinutes(TtsReader.SLEEP_OPTIONS[it]) }
                 )
             }
+        )
+    }
+
+    // 查词对话框：只对属灵书籍有效
+    if (showLookup && item.type == "book" && vocab != null) {
+        LookupDialog(
+            initialWord = "",
+            bookTitle = item.title,
+            vocab = vocab,
+            onDismiss = { showLookup = false }
         )
     }
 }
