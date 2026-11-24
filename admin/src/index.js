@@ -493,6 +493,8 @@ export default {
         });
         item.url = url.origin + "/file/" + key;
         item.size = humanSize(file.size);
+        // 扫描版书籍：原书 PDF 同时写 pdfUrl，App 阅读器里的“查看原书 PDF”按钮用它
+        if (ext === "pdf") item.pdfUrl = item.url;
       }
       const items = await readCatalog(env);
       items.unshift(item);
@@ -1160,6 +1162,13 @@ async function save() {
     var songF = document.getElementById("songFile").files[0];
     if (songF) fd.append("file", songF);
   }
+  var bookPdfSent = false;
+  if (cat === "属灵书籍") {
+    // 扫描版书：原书 PDF 跟新建请求一起传——服务器校验要求正文或文件二选一，
+    // 空正文只靠事后附件是建不出条目的；服务器存好后同时写 pdfUrl
+    var bf0 = document.getElementById("bookPdfFile").files[0];
+    if (bf0) { fd.append("file", bf0); bookPdfSent = true; }
+  }
   showMsg("正在上传，请稍等…", "msg2");
   var r2 = await fetch("/api/upload", { method: "POST", body: fd });
   var d2 = await r2.json();
@@ -1178,7 +1187,7 @@ async function save() {
   // 原书 PDF 等条目建好之后再传（要 itemId）；书已保存，PDF 没传上去也不丢条目，
   // 报错后提示用户点编辑再传
   var bf2 = document.getElementById("bookPdfFile").files[0];
-  if (bf2) {
+  if (bf2 && !bookPdfSent) {
     var errB2 = await uploadAttachment(d2.item.id, bf2, "原书 PDF");
     if (errB2) {
       resetForm(); load();
