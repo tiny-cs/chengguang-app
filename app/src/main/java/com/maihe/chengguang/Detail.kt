@@ -7,12 +7,11 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Environment
 import android.util.Rational
-import android.widget.MediaController
-import android.widget.VideoView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -75,9 +74,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -632,30 +628,17 @@ fun VideoDetail(
     val context = LocalContext.current
     val activity = context as? Activity
     val localView = LocalView.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val uri = downloads.playUri(item)
-    // 缓冲状态：打开先显示“正在加载…”，准备好/出第一帧后消失；
-    // 播着播着网卡了（BUFFERING_START）会再出现，播不下去会显示失败。
-    // 用 remember(item.id) 存：换一条视频就回到“加载中”，不沿用上一条的状态。
-    val buffering = remember(item.id) { mutableStateOf(true) }
-    val playFailed = remember(item.id) { mutableStateOf(false) }
+    val source = downloads.playSource(item)
+    val offline = downloads.isDownloaded(item)
     // 全屏状态：进全屏转横屏、藏系统栏、藏标题栏；退出回竖屏、恢复系统栏。
     var isFullscreen by remember(item.id) { mutableStateOf(false) }
-    // 画中画要用的：VideoView 引用、视频实际尺寸、页面是不是在前台、
-    // 是不是刚点了进小窗口（进画中画那一下 Activity 也会走 onPause，别误停）。
-    val videoViewRef = remember { mutableStateOf<VideoView?>(null) }
-    val videoSize = remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    val pageResumed = remember { mutableStateOf(true) }
-    val autoPaused = remember { mutableStateOf(false) }
-    val pipRequested = remember { mutableStateOf(false) }
-    // 倍速和播放模式：照音频页那套（SPEEDS / PlayMode），只影响视频页；
-    // 不用 remember(item.id)，换一首不重置（离开视频页才重置）；
-    // MediaPlayer 引用存在这里，倍速要直接调它（VideoView 自己不暴露播放器）。
-    var videoSpeed by remember { mutableStateOf(1f) }
-    var videoMode by remember { mutableStateOf(PlayMode.ORDER) }
-    val mediaPlayerRef = remember { mutableStateOf<MediaPlayer?>(null) }
+    var dragMs by remember { mutableStateOf<Int?>(null) }
     // 画中画状态在 MainActivity 上（系统回调里更新）：小窗口里只显示视频本身。
     val inPip = (activity as? MainActivity)?.pipMode?.value == true
+    // 画面宽高比：准备好之前按 16:9，准备好按视频实际尺寸，画面不变形。
+    val vw = VideoPlayer.videoWidth
+    val vh = VideoPlayer.videoHeight
+    val videoRatio = if (vw > 0 && vh > 0) vw.toFloat() / vh else 16f / 9f
 
     fun setSystemBars(fullscreen: Boolean) {
         val act = activity ?: return
@@ -698,64 +681,10 @@ fun VideoDetail(
     /** 进小窗口：返回 true 表示系统接了。失败时不改任何状态，视频留在原地继续播。 */
     fun enterPip(): Boolean {
         val act = activity ?: return false
-        val (w, h) = videoSize.value ?: (16 to 9)
-        pipRequested.value = true
+        val (w, h) = VideoPlayer.videoWidth to VideoPlayer.videoHeight
         // 小窗口参数里带上播放/暂停按钮（图标按当前是不是在播来定）
-        val params = VideoPip.pipParams(act, pipAspectRatio(w, h), videoViewRef.value?.isPlaying == true)
-        val ok = act.enterPictureInPictureMode(params)
-        if (!ok) pipRequested.value = false
-        return ok
-    }
-
-    /** 倍速：直接调 MediaPlayer 的 playbackParams（AudioPlayer.applySpeed() 同款做法）；
-     * 1.0x 也要调——调回 1.0x 时不调会留在上一个倍速上。没准备好会抛异常，等准备好再调。 */
-    fun applyVideoSpeed(mp: MediaPlayer? = mediaPlayerRef.value) {
-        val p = mp ?: return
-        try {
-            p.playbackParams = p.playbackParams.setSpeed(videoSpeed)
-        } catch (_: Exception) {
-            // 没准备好时调倍速会抛异常，OnPrepared 里会再调一次
-        }
-    }
-
-    fun videoSpeedLabel(): String = when (videoSpeed) {
-        0.75f -> "0.75x"
-        1f -> "1.0x"
-        1.25f -> "1.25x"
-        1.5f -> "1.5x"
-        else -> "2.0x"
-    }
-
-    fun cycleVideoSpeed() {
-        val speeds = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
-        videoSpeed = speeds[(speeds.indexOf(videoSpeed) + 1).mod(speeds.size)]
-        applyVideoSpeed()
-    }
-
-    /** 播放模式只转三个：顺序播放 / 单曲循环 / 列表循环（视频不用随机播放）。 */
-    fun cycleVideoMode() {
-        videoMode = when (videoMode) {
-            PlayMode.ORDER -> PlayMode.SINGLE
-            PlayMode.SINGLE -> PlayMode.LOOP_ALL
-            else -> PlayMode.ORDER
-        }
-    }
-
-    /** 下一首按钮：单曲循环或只有一首时从头重播，其余按顺序切下一首（到尾了绕回第一首）；
-     * 照 AudioPlayer.next() 的做法。 */
-    fun playNextVideo() {
-        val vv = videoViewRef.value
-        if (videoMode == PlayMode.SINGLE || siblings.size <= 1) {
-            try {
-                vv?.seekTo(0)
-                vv?.start()
-            } catch (_: Exception) {
-            }
-            return
-        }
-        val idx = siblings.indexOfFirst { it.id == item.id }
-        if (idx < 0) return
-        onSelectItem(siblings[(idx + 1).mod(siblings.size)].id)
+        val params = VideoPip.pipParams(act, pipAspectRatio(w, h), VideoPlayer.isPlaying)
+        return act.enterPictureInPictureMode(params)
     }
 
     /** 小窗口里的播放/暂停按钮图标跟着状态走：在小窗口里时状态变了就重传一次参数。
@@ -763,81 +692,41 @@ fun VideoDetail(
     fun refreshPipActions() {
         val act = activity ?: return
         if (!act.isInPictureInPictureMode) return
-        val (w, h) = videoSize.value ?: (16 to 9)
+        val (w, h) = VideoPlayer.videoWidth to VideoPlayer.videoHeight
         act.setPictureInPictureParams(
-            VideoPip.pipParams(act, pipAspectRatio(w, h), videoViewRef.value?.isPlaying == true)
+            VideoPip.pipParams(act, pipAspectRatio(w, h), VideoPlayer.isPlaying)
         )
     }
 
     /** 小窗口里的播放/暂停按钮点的就是这个（VideoPip.onToggle 注册到这里）：
      * 播着就暂停，停着就继续；播到结尾了从头播。缓冲中 / 加载失败时不理会。 */
     fun toggleVideoPlayback() {
-        val vv = videoViewRef.value ?: return
-        if (buffering.value || playFailed.value) return
-        try {
-            if (vv.isPlaying) {
-                vv.pause()
-            } else {
-                if (vv.duration > 0 && vv.currentPosition >= vv.duration - 200) vv.seekTo(0)
-                vv.start()
-            }
-        } catch (_: Exception) {
-        }
+        VideoPlayer.togglePlayback()
         refreshPipActions()
-    }
-
-    /** 播完一首：照 AudioPlayer.onTrackEnded 的逻辑。 */
-    fun onVideoEnded() {
-        val vv = videoViewRef.value
-        when (videoMode) {
-            PlayMode.SINGLE -> {
-                try {
-                    vv?.seekTo(0)
-                    vv?.start()
-                } catch (_: Exception) {
-                }
-            }
-            PlayMode.ORDER -> {
-                val idx = siblings.indexOfFirst { it.id == item.id }
-                if (idx >= 0 && idx < siblings.size - 1) {
-                    onSelectItem(siblings[idx + 1].id)
-                } else {
-                    // 顺序播到最后一首：停在结尾，小窗口按钮换成播放图标
-                    refreshPipActions()
-                }
-            }
-            PlayMode.LOOP_ALL -> {
-                if (siblings.size <= 1) {
-                    try {
-                        vv?.seekTo(0)
-                        vv?.start()
-                    } catch (_: Exception) {
-                    }
-                } else {
-                    val idx = siblings.indexOfFirst { it.id == item.id }
-                    if (idx >= 0) onSelectItem(siblings[(idx + 1).mod(siblings.size)].id)
-                }
-            }
-            else -> refreshPipActions() // SHUFFLE 不用于视频
-        }
     }
 
     // 全屏时按返回先退全屏，不直接退回上一页（这个 BackHandler 比 ChengguangApp
     // 里那个后注册，启用时优先触发——和书架页多选返回同一个做法）。
     BackHandler(enabled = isFullscreen) { exitFullscreen() }
 
-    // 按 Home / 切到最近任务时自动进小窗口（只在播着的时候；暂停着不进）。
-    // 离开页面时取消注册，同时把方向和系统栏恢复成跟随系统
-    // （退出全屏时设了竖屏锁定，这里松开，免得别的页面也被锁竖屏）。
+    // 切歌列表 + 按 Home 自动进小窗口 + 画中画按钮回调：离开页面时都清掉。
+    // 离开页面时方向和系统栏恢复成跟随系统（退出全屏时设了竖屏锁定，这里松开，
+    // 免得别的页面也被锁竖屏）。注意：这里不做任何停止——视频在后台继续播，
+    // 只出声，画面等回来再接。
     DisposableEffect(item.id) {
+        VideoPlayer.queue = siblings
+        VideoPlayer.onCurrentChanged = { next ->
+            if (next.id != item.id) onSelectItem(next.id)
+        }
         val act = activity as? MainActivity
         act?.onUserLeaveHintAction = {
-            if (videoViewRef.value?.isPlaying == true) enterPip()
+            if (VideoPlayer.isPlaying) enterPip()
         }
         // 小窗口里的播放/暂停按钮：Receiver 收到点按就调这里；离开页面时清掉
         VideoPip.onToggle = { toggleVideoPlayback() }
-        VideoPip.getIsPlaying = { videoViewRef.value?.isPlaying == true }
+        VideoPip.getIsPlaying = { VideoPlayer.isPlaying }
         onDispose {
+            VideoPlayer.onCurrentChanged = null
             act?.onUserLeaveHintAction = null
             VideoPip.onToggle = null
             VideoPip.getIsPlaying = null
@@ -852,43 +741,55 @@ fun VideoDetail(
         }
     }
 
-    // 页面前后台：切后台（非画中画）时暂停，回来时如果之前是被系统停的就接着播；
-    // 画中画时 Activity 也会走 onPause，但视频要继续播，别停。
-    // 刚打开还在缓冲、用户就按 Home 的情况：OnPrepared 里先别自动播，等回来再播，
-    // 不然会在后台突然出声。
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> {
-                    pageResumed.value = false
-                    val act = activity
-                    if (act?.isInPictureInPictureMode == false && !pipRequested.value) {
-                        videoViewRef.value?.let { vv ->
-                            if (vv.isPlaying) {
-                                vv.pause()
-                                autoPaused.value = true
-                            }
-                        }
-                    }
-                }
-                Lifecycle.Event.ON_RESUME -> {
-                    pageResumed.value = true
-                    pipRequested.value = false
-                    if (autoPaused.value) {
-                        videoViewRef.value?.start()
-                        autoPaused.value = false
-                    }
-                }
-                else -> {}
+    // 进这个页面：如果播的不是这条——
+    //   * 别的声音正在播（音频或另一条视频）：别打断它，只等用户点播放再切过来；
+    //   * 没在播：已下载的直接自动播，远程的先准备好、等用户点播放（避免一打开就偷跑流量）。
+    // 如果正在播这条但地址变了（如下载完成变成离线文件），用新地址重新准备，播着的继续播。
+    LaunchedEffect(item.id, source) {
+        if (VideoPlayer.currentItem?.id != item.id) {
+            if (!VideoPlayer.isPlaying && !AudioPlayer.isPlaying) {
+                VideoPlayer.play(context, item, source, offline, autoStart = offline)
             }
+        } else if (VideoPlayer.currentSource != source) {
+            VideoPlayer.play(context, item, source, offline, autoStart = VideoPlayer.isPlaying)
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 播着的时候每 0.5 秒刷一次进度条
+    LaunchedEffect(VideoPlayer.isPlaying) {
+        while (VideoPlayer.isPlaying) {
+            VideoPlayer.refreshPosition()
+            delay(500)
+        }
+    }
+
+    // 小窗口里状态变了（准备好、播完切歌、暂停/继续）就重传一次小窗口参数，按钮图标跟着变
+    LaunchedEffect(VideoPlayer.isPlaying, VideoPlayer.currentItem) {
+        refreshPipActions()
+    }
+
+    // 播放状态都存在 VideoPlayer 单例里：离开这个页面也不会丢，回来继续显示
+    val status = VideoPlayer.status
+    val isPlaying = VideoPlayer.isPlaying
+    val isBuffering = VideoPlayer.isBuffering
+    val mode = VideoPlayer.mode
+    // 正在播别的声音：这个页面显示那条的状态，进度条先不动，点播放就切到这条
+    val soundingItem = when {
+        VideoPlayer.isPlaying -> VideoPlayer.currentItem
+        AudioPlayer.isPlaying -> AudioPlayer.currentItem
+        else -> null
+    }
+    val playingOther = soundingItem != null && soundingItem.id != item.id
+    val shownPosition = if (playingOther) 0 else VideoPlayer.positionMs
+    val shownDuration = if (playingOther) 0 else VideoPlayer.durationMs
+    val statusText = if (playingOther) "正在播：${soundingItem?.title}"
+        else if (isBuffering || status == "准备中…") "正在缓冲…"
+        else status
+    val showBuffering = status == "准备中…" || isBuffering
+    val showFailed = status.startsWith("加载失败") || status.startsWith("播放失败")
+
     // 全屏/小窗口时只显示视频本身（标题、下载、讲章都藏起来）；
-    // 视频 Box 是同一个节点，只是换了尺寸，所以横竖屏切换、进出小窗口
-    // 都不会让 VideoView 重建、重播（地址没变时 update 里也不重置）。
+    // 全屏时画面按视频实际比例居中，上下留黑边，不拉变形。
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -898,71 +799,33 @@ fun VideoDetail(
             modifier = Modifier
                 .then(
                     if (isFullscreen || inPip) Modifier.fillMaxSize()
-                    else Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                    else Modifier.fillMaxWidth().aspectRatio(videoRatio)
                 )
-                .background(Color.Black)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
         ) {
             AndroidView(
                 factory = { ctx ->
-                    VideoView(ctx).apply {
-                        videoViewRef.value = this
-                        val controller = MediaController(ctx)
-                        controller.setAnchorView(this)
-                        setMediaController(controller)
-                        setOnPreparedListener { mp ->
-                            mediaPlayerRef.value = mp
-                            videoSize.value = mp.videoWidth to mp.videoHeight
-                            buffering.value = false
-                            applyVideoSpeed(mp)
-                            // 页面在前台（或在小窗口里）才自动播；刚打开还在缓冲就切后台了，
-                            // 先别出声，等回来再播（见上面的 autoPaused）。
-                            if (pageResumed.value || activity?.isInPictureInPictureMode == true) {
-                                mp.start()
-                            } else {
-                                autoPaused.value = true
+                    SurfaceView(ctx).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                VideoPlayer.attachSurface(holder)
                             }
-                            // 换了一首（尤其是在小窗口里自动切歌）：比例和按钮图标都按新视频刷新
-                            refreshPipActions()
-                        }
-                        setOnInfoListener { _, what, _ ->
-                            when (what) {
-                                MediaPlayer.MEDIA_INFO_BUFFERING_START -> buffering.value = true
-                                MediaPlayer.MEDIA_INFO_BUFFERING_END,
-                                MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> buffering.value = false
+
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                VideoPlayer.detachSurface()
                             }
-                            false
-                        }
-                        setOnErrorListener { _, _, _ ->
-                            buffering.value = false
-                            playFailed.value = true
-                            reportMessage("video-playback", item.title)
-                            true
-                        }
+                        })
                     }
                 },
-                update = { view ->
-                    // 播完回调放在 update 里设（不在 factory 里）：换一首后 siblings 列表变了，
-                    // 这里每次重组都用最新的列表，factory 里只会抓到第一次的旧列表。
-                    view.setOnCompletionListener { onVideoEnded() }
-                    // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
-                    if (view.tag != uri.toString()) {
-                        view.tag = uri.toString()
-                        videoSize.value = null
-                        buffering.value = true
-                        playFailed.value = false
-                        view.setVideoURI(uri)
-                    }
-                },
-                onRelease = { v ->
-                    // 离开视频页就彻底停掉，不然 VideoView 会在后台继续出声
-                    // （进画中画、转屏都不会走到这里，组合还在，不会误停）。
-                    videoViewRef.value = null
-                    mediaPlayerRef.value = null
-                    v.stopPlayback()
-                },
-                modifier = Modifier.fillMaxSize()
+                // 离开视频页只摘画面，不停止：声音继续播，回来 surfaceCreated 再接上。
+                // （转屏、进出小窗口时 surface 也会重建，同样只摘只接，不重播。）
+                onRelease = { VideoPlayer.detachSurface() },
+                modifier = Modifier.fillMaxWidth().aspectRatio(videoRatio)
             )
-            if (buffering.value) {
+            if (showBuffering) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -973,7 +836,7 @@ fun VideoDetail(
                         Text("正在加载…", color = Color.White, fontSize = 14.sp)
                     }
                 }
-            } else if (playFailed.value) {
+            } else if (showFailed) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -1011,7 +874,10 @@ fun VideoDetail(
                 OutlinedButton(onClick = { enterFullscreen() }) { Text("全屏", fontSize = 14.sp) }
                 OutlinedButton(onClick = { enterPip() }) { Text("小窗口", fontSize = 14.sp) }
             }
-            // 倍速 / 播放模式 / 下一首：照音频页那套，只影响视频；窄屏上横向能滑开，不会溢出
+            // 播放/暂停、倍速、播放模式、下一首：照音频页那套，只影响视频；
+            // 窄屏上横向能滑开，不会溢出。以前点画面弹出来的系统控制器没有了，
+            // 播放/暂停和进度条都改成页面自己的按钮（VideoView 换 SurfaceView 之后
+            // 系统控制器用不了，进度条也得自己画）。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1020,11 +886,33 @@ fun VideoDetail(
                     .padding(bottom = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(onClick = { cycleVideoSpeed() }) { Text("倍速 ${videoSpeedLabel()}", fontSize = 14.sp) }
-                OutlinedButton(onClick = { cycleVideoMode() }) { Text("模式：${videoMode.label}", fontSize = 14.sp) }
-                OutlinedButton(onClick = { playNextVideo() }) { Text("下一首", fontSize = 14.sp) }
+                OutlinedButton(onClick = { VideoPlayer.toggle(context, item, source, offline) }) {
+                    Text(if (isPlaying && !playingOther) "暂停" else "播放", fontSize = 14.sp)
+                }
+                OutlinedButton(onClick = { VideoPlayer.cycleSpeed() }) { Text("倍速 ${VideoPlayer.speedLabel()}", fontSize = 14.sp) }
+                OutlinedButton(onClick = { VideoPlayer.cycleMode() }) { Text("模式：${mode.label}", fontSize = 14.sp) }
+                OutlinedButton(onClick = { VideoPlayer.next() }) { Text("下一首", fontSize = 14.sp) }
             }
             Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                Slider(
+                    value = (dragMs ?: shownPosition).toFloat(),
+                    onValueChange = { dragMs = it.toInt() },
+                    onValueChangeFinished = {
+                        dragMs?.let { VideoPlayer.seekTo(it) }
+                        dragMs = null
+                    },
+                    valueRange = 0f..(shownDuration.coerceAtLeast(1)).toFloat(),
+                    enabled = !playingOther,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(formatMs(dragMs ?: shownPosition), fontSize = 13.sp, color = Color.Gray)
+                    Text(if (shownDuration > 0) formatMs(shownDuration) else item.duration, fontSize = 13.sp, color = Color.Gray)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
                 Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(6.dp))
                 val meta = buildString {
@@ -1039,6 +927,18 @@ fun VideoDetail(
                     Text(item.description, fontSize = 15.sp, color = Color.DarkGray)
                 }
                 Spacer(modifier = Modifier.height(12.dp))
+                if (showBuffering) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在缓冲…", fontSize = 13.sp, color = Color.Gray)
+                    }
+                } else {
+                    Text(statusText, fontSize = 13.sp, color = Color.Gray)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("离开这个页面声音会继续播，底部小条可以暂停、停止或回到这里", fontSize = 12.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
                 Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
                 Spacer(modifier = Modifier.height(20.dp))
                 DownloadSection(item, downloads)

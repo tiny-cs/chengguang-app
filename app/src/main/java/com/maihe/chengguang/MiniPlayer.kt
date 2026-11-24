@@ -34,22 +34,46 @@ import androidx.compose.ui.unit.sp
 private val MiniPlayerNavy = Color(0xFF1F2A44)
 private val MiniPlayerGold = Color(0xFF9A7B2D)
 
+/** 迷你条现在显示谁：视频 / 音频 / 都没有 */
+enum class ActivePlayer { VIDEO, AUDIO, NONE }
+
+/**
+ * 迷你条和通知栏共用同一条规则，决定现在显示谁：
+ * 谁在出声就显示谁；都不出声时，视频有东西可管（暂停 / 缓冲 / 刚准备好）
+ * 就显示视频，再没有就显示音频；两个都没有就 NONE（不占位置）。
+ * 听书不在这里判断：迷你条在听书进行时本来就不显示，通知栏另有听书那条。
+ */
+fun resolveActivePlayer(): ActivePlayer {
+    val videoActive = VideoPlayer.currentItem != null &&
+        VideoPlayer.status != "已停止" && VideoPlayer.status != "已播完"
+    val audioActive = AudioPlayer.currentItem != null &&
+        AudioPlayer.status != "已停止" && AudioPlayer.status != "已播完"
+    return when {
+        VideoPlayer.isPlaying -> ActivePlayer.VIDEO
+        AudioPlayer.isPlaying -> ActivePlayer.AUDIO
+        videoActive -> ActivePlayer.VIDEO
+        audioActive -> ActivePlayer.AUDIO
+        else -> ActivePlayer.NONE
+    }
+}
+
 /**
  * 主界面迷你播放条。
  *
- * 音频是后台播放：从音频详情页退回首页 / 全部 / 我的，AudioPlayer 还在播，
+ * 音频和视频都是后台播放：从详情页退回首页 / 全部 / 我的，播放还在继续，
  * 但主界面上原来没有任何控制，只能下拉通知栏。这条小条补上这个口子：
  * 显示正在播的标题和状态，暂停 / 继续、停止都在主界面点一下就行，
- * 点小条本身回到这首音频的详情页。
+ * 点小条本身回到这条内容的详情页（音频回音频详情，视频回视频详情，
+ * 回去画面从当前位置继续，不重播）。
  *
  * 显示条件（缺一个都不显示，不占位置）：
- * - AudioPlayer.currentItem != null（播过一首）
- * - 状态不是“已停止”也不是“已播完”（停了、播完了就没东西可管了）
- * - 听书（TtsReader）不在进行（听书开始时会停掉音频；只剩暂停的音频时，
- *   听书一开这条也不显示，免得两个东西抢位置）
+ * - 音频或视频有一条在播过（currentItem != null），且状态不是“已停止”
+ *   也不是“已播完”（停了、播完了就没东西可管了）
+ * - 听书（TtsReader）不在进行（听书开始时会停掉音频和视频；只剩暂停的
+ *   音频 / 视频时，听书一开这条也不显示，免得两个东西抢位置）
+ * - 两个都在管的时候：谁在出声就显示谁；都不出声时显示视频（见 resolveActivePlayer）
  *
- * 只管音频：暂停 / 继续调 AudioPlayer.pause() / resume()，
- * 停止调 AudioPlayer.stopPlayback()（停后状态变“已停止”，小条自己消失）。
+ * 暂停 / 继续、停止都按到当前显示的那一个播放器上。
  * 正在准备（“准备中…”）时暂停键换成小转圈，不让用户点一个没准备好的播放器。
  *
  * 接线（MainActivity.kt 里做，本文件不管）：放在 Scaffold 的 bottomBar 里、
@@ -61,13 +85,18 @@ fun MiniPlayerBar(
     onOpenDetail: (itemId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val item = AudioPlayer.currentItem
-    if (item == null) return
-    if (AudioPlayer.status == "已停止" || AudioPlayer.status == "已播完") return
     if (TtsReader.isActive) return
+    val active = resolveActivePlayer()
+    if (active == ActivePlayer.NONE) return
+    val isVideo = active == ActivePlayer.VIDEO
+    val item = if (isVideo) VideoPlayer.currentItem else AudioPlayer.currentItem
+    if (item == null) return
+    val status = if (isVideo) VideoPlayer.status else AudioPlayer.status
+    val isPlaying = if (isVideo) VideoPlayer.isPlaying else AudioPlayer.isPlaying
+    val isBuffering = if (isVideo) VideoPlayer.isBuffering else AudioPlayer.isBuffering
 
-    val statusText = if (AudioPlayer.isBuffering) "正在缓冲…" else AudioPlayer.status
-    val preparing = AudioPlayer.status == "准备中…"
+    val statusText = if (isBuffering) "正在缓冲…" else status
+    val preparing = status == "准备中…"
 
     Card(
         modifier = modifier
@@ -111,17 +140,25 @@ fun MiniPlayerBar(
             } else {
                 IconButton(
                     onClick = {
-                        if (AudioPlayer.isPlaying) AudioPlayer.pause() else AudioPlayer.resume()
+                        if (isVideo) {
+                            if (VideoPlayer.isPlaying) VideoPlayer.pause() else VideoPlayer.resume()
+                        } else {
+                            if (AudioPlayer.isPlaying) AudioPlayer.pause() else AudioPlayer.resume()
+                        }
                     }
                 ) {
                     Icon(
-                        if (AudioPlayer.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (AudioPlayer.isPlaying) "暂停" else "继续",
+                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "继续",
                         tint = MiniPlayerNavy
                     )
                 }
             }
-            IconButton(onClick = { AudioPlayer.stopPlayback() }) {
+            IconButton(
+                onClick = {
+                    if (isVideo) VideoPlayer.stopPlayback() else AudioPlayer.stopPlayback()
+                }
+            ) {
                 Icon(Icons.Default.Close, contentDescription = "停止", tint = Color.Gray)
             }
         }

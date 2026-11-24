@@ -344,8 +344,9 @@ object TtsReader {
             resume()
             return
         }
-        // 停掉正在播的音频，避免两个声音打架
+        // 停掉正在播的音频和视频，避免两个声音打架
         if (AudioPlayer.isPlaying) AudioPlayer.stopPlayback()
+        if (VideoPlayer.isPlaying) VideoPlayer.stopPlayback()
         currentBook = item
         plan = paragraphs.flatMapIndexed { pIdx, para ->
             splitParagraph(para).mapIndexed { sIdx, span -> PlanItem(pIdx, sIdx, span.text) }

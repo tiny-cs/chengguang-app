@@ -105,6 +105,18 @@ object AudioPlayer {
         if (TtsReader.isActive) TtsReader.stop()
     }
 
+    /**
+     * 播音频前先停掉视频：音频和视频不能同时出声（和停听书同一个道理）。
+     * 不会循环：VideoPlayer.stopPlayback() 只改 VideoPlayer 自己的状态
+     * （停播放器、清状态、撤通知），不会回头调 AudioPlayer；反过来
+     * VideoPlayer 开始出声时停 AudioPlayer 也只改 AudioPlayer 自己的状态。
+     * 两边都只在“真正要出声”那一刻（startPlayback / resume / next 单曲重播）
+     * 停对方，prepare（只准备不播）时不触发。
+     */
+    private fun stopVideoIfPlaying() {
+        if (VideoPlayer.isPlaying) VideoPlayer.stopPlayback()
+    }
+
     /** 开始播一首。同一首且已准备好时不重复准备，直接恢复。 */
     fun play(context: Context, item: CatalogItem, source: String, offline: Boolean, autoStart: Boolean = true) {
         appContext = context.applicationContext
@@ -154,8 +166,9 @@ object AudioPlayer {
     }
 
     private fun startPlayback() {
-        // 真正要出声了才停听书：只打开远程音频页看看（autoStart=false，只准备不播）时别停朗读
+        // 真正要出声了才停听书和视频：只打开远程音频页看看（autoStart=false，只准备不播）时别停别的声音
         stopTtsIfReading()
+        stopVideoIfPlaying()
         try {
             playerOrCreate().start()
         } catch (_: Exception) {
@@ -171,8 +184,9 @@ object AudioPlayer {
     fun resume() {
         val p = player ?: return
         if (currentItem == null) return
-        // 从通知栏 / 迷你条点“继续”也会走到这里：先停听书
+        // 从通知栏 / 迷你条点“继续”也会走到这里：先停听书和视频
         stopTtsIfReading()
+        stopVideoIfPlaying()
         try {
             if (status == "已播完") {
                 p.seekTo(0)
@@ -235,9 +249,12 @@ object AudioPlayer {
     fun next() {
         val item = currentItem ?: return
         if (mode == PlayMode.SINGLE || queue.size <= 1) {
-            // 单曲循环 / 只有一首：直接从头播，不走 play()，这里也要先停听书
-            // （player 为空时根本播不起来，就别停听书）
-            if (player != null) stopTtsIfReading()
+            // 单曲循环 / 只有一首：直接从头播，不走 play()，这里也要先停听书和视频
+            // （player 为空时根本播不起来，就别停别的声音）
+            if (player != null) {
+                stopTtsIfReading()
+                stopVideoIfPlaying()
+            }
             try {
                 player?.seekTo(0)
                 player?.start()
