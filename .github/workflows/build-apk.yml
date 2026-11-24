@@ -34,7 +34,7 @@ jobs:
           gradle-version: "8.7"
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug -PsentryDsn=${{ secrets.SENTRY_DSN }} --stacktrace
 
       - name: Rename APK
         run: |
