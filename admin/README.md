@@ -37,12 +37,18 @@ admin/
 | POST | `/api/upload/part?uploadId=&key=&partNumber=` | 分块上传第 2 步：body 为一块原始数据（10MB），返回 etag（要登录） |
 | POST | `/api/upload/complete` | 分块上传第 3 步：合并分块并写目录（要登录） |
 | POST | `/api/upload/abort` | 取消未完成的分块上传（要登录） |
+| POST | `/api/feedback` | 读者提建议（公开，不用登录）：`{text, contact?}` → 存 R2 `feedback.json`，最多 500 条 |
+| GET | `/api/feedback` | 读者建议列表（要登录） |
+| DELETE | `/api/feedback/:id` | 删一条建议（要登录） |
 | PUT | `/api/items/:id` | 改标题 / 栏目 / 简介 / 时长 / 正文（要登录） |
 | DELETE | `/api/items/:id` | 删目录 + 删 R2 文件（要登录） |
 
 ## 上传规则
 
 - 书籍 / 诗歌：填正文即可，文件可选（PDF 等附件）。
+  也可以点“从文件导入正文”选一个 TXT、PDF 或 Word `.docx`，浏览器自动提取文字填进正文框，
+  检查后点保存即可（TXT 直接读；PDF 用 pdf.js 按页提文字，扫描图片版提不出；Word 用 mammoth 提 `.docx` 纯文本，
+  老格式 `.doc` 请另存为 `.docx` 再传；超过 100 万字请按章节拆开传）。原文件不存进 R2，只存提取出的正文。
 - 音频 / 视频：必须传文件；只收 mp3/m4a/wav/ogg/aac/flac 和 mp4/mov/webm/mkv/m4v。
 - 音视频走分块上传：浏览器把文件切成 10MB 一块顺序传到 Worker，Worker 经 R2 分块上传接口写进桶，
   绕过 Workers 单次 100MB 请求体上限。音频上限 500MB，视频上限 2GB。

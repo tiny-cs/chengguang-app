@@ -16,6 +16,8 @@ const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024; // 视频分块上传上限 2GB
 const AUDIO_EXTS = ["mp3", "m4a", "wav", "ogg", "aac", "flac"];
 const VIDEO_EXTS = ["mp4", "mov", "webm", "mkv", "m4v"];
 const CATALOG_KEY = "catalog.json";
+const FEEDBACK_KEY = "feedback.json"; // 读者建议：App“给开发者建议”提交的，只管理员能看
+const MAX_FEEDBACK_CHARS = 2000;
 
 // 首次部署时自动写入的示例目录（与 App 内置 catalog.json 同源，见 build 时注入）。
 const SEED_CATALOG = [{"category": "属灵书籍", "content": "认识基督，不是一套道理，乃是一个人。\n\n我们越认识祂，就越认识自己；越亲近祂，就越有力量走前面的路。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "认识基督，是属灵生命的起头，也是每天的功课。", "duration": "", "id": "b1", "size": "", "title": "认识基督", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "真实的属灵，不在乎人看得见的热心，乃在乎里面有没有基督的成分。\n\n生命长大是一天一天的事，急不得，也假不得。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "属灵的事不在外面，乃在里面；不在知识，乃在生命。", "duration": "", "id": "b2", "size": "", "title": "属灵的实际", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "环境来的时候，人总想问为什么；等走过去了，才看见那是恩典的手。\n\n经历不是白白得来的，是在顺服里一点一点积攒的。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "每一处环境，都是量给我们的功课。", "duration": "", "id": "b3", "size": "", "title": "生命的经历", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "祷告的起头很简单：停下来，把心里的话告诉主。\n\n天天这样操练，里面就渐渐有了安息和亮光。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "祷告不是仪式，乃是与主交通的生活。", "duration": "", "id": "b4", "size": "", "title": "祷告的操练", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "清晨的光照进窗来，\n我的心向你歌唱；\n荣耀、尊贵、权柄、能力，\n都归于坐宝座的羔羊。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "清晨醒来，第一句就是赞美。", "duration": "", "id": "p1", "size": "", "title": "荣耀归于主", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "长阔高深的爱，\n把我这个人全然包围；\n在软弱中祂扶持，\n在黑夜里祂是光。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "祂的爱，量不尽，也说不完。", "duration": "", "id": "p2", "size": "", "title": "主爱长阔高深", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "羔羊无论往哪里去，\n我都愿意跟随；\n路虽窄，心却安，\n因为祂与我同行。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "无论往哪里去，都跟随羔羊的脚踪。", "duration": "", "id": "p3", "size": "", "title": "跟随羔羊", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "生命诗歌", "content": "一座城立在山上，\n光从城里透出来；\n愿这光照亮四方，\n叫人看见就归荣耀给父。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "城造在山上，是不能隐藏的。", "duration": "", "id": "p4", "size": "", "title": "城上的光", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "信心不是感觉，乃是扎根在神的话上。（示例音频）", "duration": "32:10", "id": "a1", "size": "45 MB", "title": "信心的根基", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "人活着不是单靠食物，乃是靠神口里所出的一切话。（示例音频）", "duration": "28:45", "id": "a2", "size": "41 MB", "title": "生命的粮", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "彼此相爱，是主给我们的新命令。（示例音频）", "duration": "41:20", "id": "a3", "size": "59 MB", "title": "爱的命令", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道音频", "description": "等候耶和华的，必重新得力。（示例音频）", "duration": "25:30", "id": "a4", "size": "36 MB", "title": "等候主", "type": "audio", "url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "城光 App 视频栏目示例，正式讲道视频由管理员上传替换。", "duration": "09:56", "id": "v1", "size": "158 MB", "title": "城光：序", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "10:53", "id": "v2", "size": "176 MB", "title": "生命的粮", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "14:48", "id": "v3", "size": "200 MB", "title": "山上的城", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "讲道视频", "description": "讲道视频示例，正式内容由管理员上传替换。", "duration": "12:14", "id": "v4", "size": "190 MB", "title": "光照在黑暗里", "type": "video", "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}];
@@ -61,6 +63,21 @@ async function readCatalog(env) {
 }
 async function writeCatalog(env, items) {
   await env.CHENGGUANG_BUCKET.put(CATALOG_KEY, JSON.stringify(items, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+}
+
+// ---- 读者建议读写（R2 的 feedback.json，最新的在前面，最多留 500 条） ----
+async function readFeedback(env) {
+  const obj = await env.CHENGGUANG_BUCKET.get(FEEDBACK_KEY);
+  if (!obj) return [];
+  try {
+    const list = JSON.parse(await obj.text());
+    return Array.isArray(list) ? list : [];
+  } catch (e) { return []; }
+}
+async function writeFeedback(env, list) {
+  await env.CHENGGUANG_BUCKET.put(FEEDBACK_KEY, JSON.stringify(list, null, 2), {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 }
@@ -131,6 +148,29 @@ export default {
         return new Response(obj.body, { status: 206, headers });
       }
       return new Response(obj.body, { headers });
+    }
+
+    // ---- 公开：读者给开发者提建议（App“我的”页，不用登录；只有管理员能在后台看到） ----
+    if (path === "/api/feedback" && request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" },
+      });
+    }
+    if (path === "/api/feedback" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const text = String(body.text || "").trim();
+      const contact = String(body.contact || "").trim().slice(0, 100);
+      if (!text) return err("请先写一点建议再提交");
+      if (text.length > MAX_FEEDBACK_CHARS) return err("建议太长了，请控制在 2000 字以内");
+      const list = await readFeedback(env);
+      list.unshift({
+        id: "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        text, contact, createdAt: new Date().toISOString(),
+      });
+      await writeFeedback(env, list.slice(0, 500));
+      return json({ ok: true }, 200, { "Access-Control-Allow-Origin": "*" });
     }
 
     // ---- 管理页 ----
@@ -296,6 +336,21 @@ export default {
       return json({ ok: true, items, totalBytes, fileCount, totalBytesText: humanSize(totalBytes) });
     }
 
+    // 读者建议：查看（要登录）+ 删除（要登录）
+    if (path === "/api/feedback" && request.method === "GET") {
+      const list = await readFeedback(env);
+      return json({ ok: true, items: list });
+    }
+    if (path.startsWith("/api/feedback/") && request.method === "DELETE") {
+      const id = decodeURIComponent(path.slice("/api/feedback/".length));
+      const list = await readFeedback(env);
+      const idx = list.findIndex((it) => it.id === id);
+      if (idx < 0) return err("找不到这条建议", 404);
+      list.splice(idx, 1);
+      await writeFeedback(env, list);
+      return json({ ok: true });
+    }
+
     // 上传：multipart 表单。书籍/诗歌传正文 content；音频/视频必须传文件。
     if (path === "/api/upload" && request.method === "POST") {
       let form;
@@ -408,7 +463,11 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-align:top}
 .muted{color:#888;font-size:13px}
 #msg{color:#8e4a2f;min-height:20px}
+.fb{border-bottom:1px solid #eee;padding:10px 0}
+.fb .meta{color:#888;font-size:12px;margin-top:4px}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 </head>
 <body>
 <h1>城光 · 内容管理</h1>
@@ -441,6 +500,12 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <div id="textBlock">
       <label>正文（书籍 / 诗歌）</label>
       <textarea id="content" placeholder="把正文粘贴在这里，多段换行即可"></textarea>
+      <div id="docBlock">
+        <label>或从文件导入正文（TXT / PDF / Word .docx，自动提取文字填到上面）</label>
+        <input type="file" id="docFile" accept=".txt,.pdf,.docx" onchange="importDocFile()">
+        <div id="docImportMsg" class="muted" style="margin-top:4px"></div>
+        <p class="muted">老格式 .doc 不支持，请在 Word 里另存为 .docx 再传。PDF 是扫描图片的提不出文字，请用文字版 PDF。</p>
+      </div>
     </div>
     <div id="fileBlock" style="display:none">
       <label>音频 / 视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
@@ -459,6 +524,12 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <h2>全部内容（<span id="count">0</span> 条）</h2>
     <table><thead><tr><th>标题</th><th>栏目</th><th>大小</th><th>操作</th></tr></thead>
     <tbody id="list"></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>读者建议（<span id="fbCount">0</span> 条）</h2>
+    <p class="muted">App“我的”页里读者提交的建议，不用登录也能发。处理完点删除。</p>
+    <div id="fbList">加载中…</div>
   </div>
 </div>
 
@@ -500,6 +571,86 @@ async function load() {
       + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>删除</button></td></tr>";
   }
   document.getElementById("list").innerHTML = html || "<tr><td colspan='4'>还没有内容，先上传一条试试。</td></tr>";
+  loadFeedback();
+}
+async function loadFeedback() {
+  var box = document.getElementById("fbList");
+  var r = await fetch("/api/feedback");
+  var d = await r.json();
+  if (!d.ok) { box.textContent = "加载失败：" + (d.error || ""); return; }
+  var list = d.items || [];
+  document.getElementById("fbCount").textContent = list.length;
+  if (!list.length) { box.textContent = "还没有读者建议。"; return; }
+  var html = "";
+  for (var i = 0; i < list.length; i++) {
+    var fb = list[i];
+    var when = fb.createdAt ? String(fb.createdAt).slice(0, 10) + " " + String(fb.createdAt).slice(11, 16) : "";
+    html += "<div class='fb'><div>" + esc(fb.text) + "</div>"
+      + "<div class='meta'>" + esc(when) + (fb.contact ? " · 联系：" + esc(fb.contact) : " · 匿名")
+      + " <button class='danger' data-id='" + fb.id + "' onclick='delFeedback(this.dataset.id)'>删除</button></div></div>";
+  }
+  box.innerHTML = html;
+}
+async function delFeedback(id) {
+  if (!confirm("确定删除这条建议吗？")) return;
+  var r = await fetch("/api/feedback/" + encodeURIComponent(id), { method: "DELETE" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "删除失败"); return; }
+  loadFeedback();
+}
+// 书籍/诗歌从文件导入正文：TXT 直接读，PDF 用 pdf.js 按页提文字，Word .docx 用 mammoth 提纯文本。
+// 只在浏览器里提取，提取完填进正文框，检查没问题再点保存；原文件不存进 R2。
+async function importDocFile() {
+  var input = document.getElementById("docFile");
+  var msg = document.getElementById("docImportMsg");
+  var f = input.files[0];
+  if (!f) return;
+  var name = f.name || "";
+  var lower = name.toLowerCase();
+  msg.textContent = "正在提取文字，请稍等…";
+  try {
+    var text = "";
+    if (lower.endsWith(".txt")) {
+      text = await f.text();
+    } else if (lower.endsWith(".pdf")) {
+      if (typeof pdfjsLib === "undefined") throw new Error("PDF 解析库没加载上，请检查网络后刷新再试");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+      var buf = await f.arrayBuffer();
+      var pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      var pages = [];
+      for (var p = 1; p <= pdf.numPages; p++) {
+        var page = await pdf.getPage(p);
+        var tc = await page.getTextContent();
+        var line = "";
+        for (var i = 0; i < tc.items.length; i++) {
+          var s = tc.items[i].str || "";
+          if (tc.items[i].hasEOL) line += s + "\n";
+          else line += s;
+        }
+        pages.push(line);
+      }
+      text = pages.join("\n\n");
+    } else if (lower.endsWith(".docx")) {
+      if (typeof mammoth === "undefined") throw new Error("Word 解析库没加载上，请检查网络后刷新再试");
+      var ab = await f.arrayBuffer();
+      var res = await mammoth.extractRawText({ arrayBuffer: ab });
+      text = res.value || "";
+    } else if (lower.endsWith(".doc")) {
+      throw new Error("老格式 .doc 提不出文字，请在 Word 里另存为 .docx 再传");
+    } else {
+      throw new Error("只支持 TXT、PDF、Word .docx 三种文件");
+    }
+    text = String(text || "").replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) throw new Error("没提取到文字：PDF 可能是扫描图片版，请用文字版 PDF；Word 请确认里面有文字");
+    if (text.length > 1000000) throw new Error("这本书太长了（超过 100 万字），请按章节拆成多个文件分别导入");
+    document.getElementById("content").value = text;
+    if (!document.getElementById("title").value.trim()) {
+      document.getElementById("title").value = name.replace(/\.[^.]+$/, "");
+    }
+    msg.textContent = "已导入 " + text.length + " 字，检查一下正文，确认没问题再点保存。";
+  } catch (e) {
+    msg.textContent = "导入失败：" + (e && e.message ? e.message : "未知错误");
+  }
 }
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function resetForm() {
@@ -510,6 +661,10 @@ function resetForm() {
   document.getElementById("content").value = "";
   document.getElementById("duration").value = "";
   document.getElementById("file").value = "";
+  var docInput = document.getElementById("docFile");
+  if (docInput) docInput.value = "";
+  var docMsg = document.getElementById("docImportMsg");
+  if (docMsg) docMsg.textContent = "";
   showMsg("", "msg2");
 }
 function editItem(id) {

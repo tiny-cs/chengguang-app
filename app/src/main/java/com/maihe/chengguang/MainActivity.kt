@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val Navy = Color(0xFF1F2A44)
@@ -400,10 +403,16 @@ fun ItemRow(item: CatalogItem, downloads: DownloadStore, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (CatalogItem) -> Unit) {
     val downloaded = downloads.downloadedItems(items)
     val totalBytes = downloads.totalDownloadedBytes(items)
+    val feedbackScope = rememberCoroutineScope()
+    var feedbackText by remember { mutableStateOf("") }
+    var feedbackContact by remember { mutableStateOf("") }
+    var feedbackStatus by remember { mutableStateOf("") }
+    var feedbackSending by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -482,11 +491,63 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    Text("给开发者建议", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("遇到问题、想看的内容、想加的功能，都可以在这里告诉我。不用登录，匿名也可以。", fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = feedbackText,
+                        onValueChange = { if (it.length <= MAX_FEEDBACK_CHARS) feedbackText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("写下你的建议…") },
+                        minLines = 4,
+                        maxLines = 8
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = feedbackContact,
+                        onValueChange = { feedbackContact = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("联系方式（可选，微信 / 邮箱）") },
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("${feedbackText.length} / $MAX_FEEDBACK_CHARS 字", fontSize = 12.sp, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            if (feedbackSending) return@Button
+                            feedbackSending = true
+                            feedbackStatus = "正在提交…"
+                            feedbackScope.launch {
+                                val error = submitFeedback(feedbackText, feedbackContact)
+                                feedbackSending = false
+                                if (error == null) {
+                                    feedbackText = ""
+                                    feedbackContact = ""
+                                    feedbackStatus = "已收到，谢谢你的建议！"
+                                } else {
+                                    feedbackStatus = error
+                                }
+                            }
+                        },
+                        enabled = !feedbackSending && feedbackText.isNotBlank()
+                    ) { Text(if (feedbackSending) "提交中…" else "提交建议") }
+                    if (feedbackStatus.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(feedbackStatus, fontSize = 13.sp, color = Color.Gray)
+                    }
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("城光是属灵内容 App：属灵书籍、生命诗歌、讲道音频、讲道视频、主日信息、灵修信息。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("版本：1.2.3（远程目录版）", fontSize = 13.sp, color = Color.Gray)
+                    Text("版本：${BuildConfig.VERSION_NAME}（远程目录版）", fontSize = 13.sp, color = Color.Gray)
                 }
             }
         }
