@@ -3,6 +3,7 @@ package com.maihe.chengguang
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Environment
 import android.widget.MediaController
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -423,36 +425,84 @@ fun AudioDetail(
 @Composable
 fun VideoDetail(item: CatalogItem, downloads: DownloadStore, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
     val uri = downloads.playUri(item)
+    // 缓冲状态：打开先显示“正在加载…”，准备好/出第一帧后消失；
+    // 播着播着网卡了（BUFFERING_START）会再出现，播不下去会显示失败。
+    // 用 remember(item.id) 存：换一条视频就回到“加载中”，不沿用上一条的状态。
+    val buffering = remember(item.id) { mutableStateOf(true) }
+    val playFailed = remember(item.id) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
     ) {
-        AndroidView(
-            factory = { ctx ->
-                VideoView(ctx).apply {
-                    val controller = MediaController(ctx)
-                    controller.setAnchorView(this)
-                    setMediaController(controller)
-                    setOnPreparedListener { it.start() }
-                    setOnErrorListener { _, _, _ ->
-                        reportMessage("video-playback", item.title)
-                        true
-                    }
-                }
-            },
-            update = { view ->
-                // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
-                if (view.tag != uri.toString()) {
-                    view.tag = uri.toString()
-                    view.setVideoURI(uri)
-                }
-            },
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
                 .background(Color.Black)
-        )
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        val controller = MediaController(ctx)
+                        controller.setAnchorView(this)
+                        setMediaController(controller)
+                        setOnPreparedListener { mp ->
+                            buffering.value = false
+                            mp.start()
+                        }
+                        setOnInfoListener { _, what, _ ->
+                            when (what) {
+                                MediaPlayer.MEDIA_INFO_BUFFERING_START -> buffering.value = true
+                                MediaPlayer.MEDIA_INFO_BUFFERING_END,
+                                MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> buffering.value = false
+                            }
+                            false
+                        }
+                        setOnErrorListener { _, _, _ ->
+                            buffering.value = false
+                            playFailed.value = true
+                            reportMessage("video-playback", item.title)
+                            true
+                        }
+                    }
+                },
+                update = { view ->
+                    // 已下载后地址会变成本地文件：地址变了才重新设置，避免每次重组都重播
+                    if (view.tag != uri.toString()) {
+                        view.tag = uri.toString()
+                        buffering.value = true
+                        playFailed.value = false
+                        view.setVideoURI(uri)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            if (buffering.value) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color.White)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("正在加载…", color = Color.White, fontSize = 14.sp)
+                    }
+                }
+            } else if (playFailed.value) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "视频加载失败，请检查网络后重试",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        }
         Column(modifier = Modifier.padding(20.dp)) {
             Text(item.title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(6.dp))
