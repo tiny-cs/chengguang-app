@@ -31,11 +31,11 @@ data class CatalogItem(
 val CATEGORIES = listOf("属灵书籍", "生命诗歌", "讲道音频", "讲道视频", "主日信息", "灵修信息")
 
 /**
- * 管理后台的目录地址。部署好 Worker 后把这里填成：
- *   https://chengguang-admin.<你的子域名>.workers.dev/catalog.json
- * 为空表示后台还没部署，App 只用内置目录。不要把这个地址写成猜出来的子域名。
+ * 管理后台的目录地址（自定义域名，国内可访问）：
+ *   https://admin.maihe334.ccwu.cc/catalog.json
+ * 为空表示后台还没部署，App 只用内置目录。
  */
-const val REMOTE_CATALOG_URL = "https://chengguang-admin.zxq4455.workers.dev/catalog.json"
+const val REMOTE_CATALOG_URL = "https://admin.maihe334.ccwu.cc/catalog.json"
 
 fun typeChar(type: String): String = when (type) {
     "book" -> "书"
