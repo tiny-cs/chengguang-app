@@ -58,11 +58,12 @@ fun DetailScreen(
     item: CatalogItem,
     downloads: DownloadStore,
     siblings: List<CatalogItem> = emptyList(),
-    onSelectItem: (String) -> Unit = {}
+    onSelectItem: (String) -> Unit = {},
+    onViewPdf: (String, String) -> Unit = { _, _ -> }
 ) {
     when (item.type) {
-        "audio" -> AudioDetail(item, downloads, siblings, onSelectItem)
-        "video" -> VideoDetail(item, downloads)
+        "audio" -> AudioDetail(item, downloads, siblings, onSelectItem, onViewPdf)
+        "video" -> VideoDetail(item, downloads, onViewPdf)
         else -> ReadingDetail(item)
     }
 }
@@ -183,9 +184,9 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
     }
 }
 
-/** 讲章附件：PDF 直接用系统查看器打开；PPT/PPTX 用微软在线预览打开（要联网）。 */
+/** 讲章附件：PDF 在 App 里直接看（内置阅读器）；PPT/PPTX 用微软在线预览打开（要联网）。 */
 @Composable
-fun SlidesSection(item: CatalogItem) {
+fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
     if (item.pdfUrl.isBlank()) return
     val context = LocalContext.current
     var hint by remember { mutableStateOf("") }
@@ -202,7 +203,7 @@ fun SlidesSection(item: CatalogItem) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 when {
-                    isPdf -> "PDF 讲章，可在线查看，也可下载到手机离线看"
+                    isPdf -> "PDF 讲章，在 App 里直接看，也可下载到手机离线看"
                     isSlides -> "PPT 讲章，在线预览打开（要联网）；建议管理员转成 PDF 再传，打开更快"
                     else -> "讲章附件"
                 },
@@ -211,7 +212,11 @@ fun SlidesSection(item: CatalogItem) {
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
-                    hint = if (openSlides(context, item.pdfUrl, isPdf)) "" else "打不开讲章，请检查网络后重试"
+                    if (isPdf) {
+                        onViewPdf(item.pdfUrl, item.title + "讲章")
+                    } else {
+                        hint = if (openSlides(context, item.pdfUrl, isPdf)) "" else "打不开讲章，请检查网络后重试"
+                    }
                 }) { Text("查看讲章") }
                 OutlinedButton(onClick = {
                     hint = if (downloadSlides(context, item, fileName)) "已开始下载，可在通知栏查看" else "下载失败，请检查网络后重试"
@@ -263,7 +268,8 @@ fun AudioDetail(
     item: CatalogItem,
     downloads: DownloadStore,
     siblings: List<CatalogItem> = emptyList(),
-    onSelectItem: (String) -> Unit = {}
+    onSelectItem: (String) -> Unit = {},
+    onViewPdf: (String, String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     // 播放地址：已下载用本地文件，否则用远程链接
@@ -387,13 +393,13 @@ fun AudioDetail(
         Spacer(modifier = Modifier.height(20.dp))
         DownloadSection(item, downloads)
         Spacer(modifier = Modifier.height(16.dp))
-        SlidesSection(item)
+        SlidesSection(item, onViewPdf)
         Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
 @Composable
-fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
+fun VideoDetail(item: CatalogItem, downloads: DownloadStore, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
     val uri = downloads.playUri(item)
     Column(
         modifier = Modifier
@@ -444,7 +450,7 @@ fun VideoDetail(item: CatalogItem, downloads: DownloadStore) {
             Spacer(modifier = Modifier.height(20.dp))
             DownloadSection(item, downloads)
             Spacer(modifier = Modifier.height(16.dp))
-            SlidesSection(item)
+            SlidesSection(item, onViewPdf)
             Spacer(modifier = Modifier.height(16.dp))
         }
     }

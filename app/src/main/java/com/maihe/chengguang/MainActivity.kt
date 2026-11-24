@@ -90,6 +90,7 @@ sealed interface Route {
     data object Mine : Route
     data class Category(val name: String) : Route
     data class Detail(val id: String) : Route
+    data class Pdf(val url: String, val title: String) : Route
 }
 
 class MainActivity : ComponentActivity() {
@@ -153,6 +154,7 @@ fun ChengguangApp() {
                     Text(
                         when (val r = current) {
                             is Route.Detail -> items.find { it.id == r.id }?.title ?: "城光"
+                            is Route.Pdf -> r.title
                             is Route.Category -> r.name
                             Route.All -> "全部内容"
                             Route.Mine -> "我的"
@@ -217,9 +219,10 @@ fun ChengguangApp() {
                         val siblings = items.filter { it.category == item.category && it.type == "audio" }
                         DetailScreen(item, downloads, siblings, onSelectItem = { id ->
                             stack[stack.lastIndex] = Route.Detail(id)
-                        })
+                        }, onViewPdf = { url, title -> go(Route.Pdf(url, title)) })
                     } else Text("内容不存在", modifier = Modifier.padding(16.dp))
                 }
+                is Route.Pdf -> PdfViewerScreen(r.url, r.title)
             }
         }
     }
