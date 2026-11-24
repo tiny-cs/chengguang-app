@@ -240,7 +240,7 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
             )
             if (slidesDownloaded) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("✓ 已下载到手机（下载文件夹）", fontSize = 14.sp)
+                Text("✓ 已下载，可离线查看", fontSize = 14.sp)
             } else if (waitingDownload) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("正在下载…", fontSize = 14.sp)
@@ -262,7 +262,7 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
                         } else {
                             hint = "删除失败"
                         }
-                    }) { Text("删除已下载") }
+                    }) { Text("删除下载") }
                 } else {
                     OutlinedButton(onClick = {
                         if (downloadSlides(context, item, fileName)) {
