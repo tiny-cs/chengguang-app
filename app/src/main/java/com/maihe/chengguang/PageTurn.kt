@@ -77,7 +77,7 @@ fun paginateBook(
     val constraints = Constraints(maxWidth = textWidthPx)
     val layouts = paragraphs.map { p ->
         if (p.isBlank()) null
-        else measurer.measure(AnnotatedString(p), textStyle, constraints)
+        else measurer.measure(AnnotatedString(p), textStyle, constraints = constraints)
     }
     val pages = mutableListOf<Page>()
     var cur = mutableListOf<PageChunk>()

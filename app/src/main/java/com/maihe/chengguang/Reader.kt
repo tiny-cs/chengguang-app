@@ -266,16 +266,16 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             var h = with(density) { 8.dp.toPx() }
             h += textMeasurer.measure(
                 AnnotatedString(item.title),
-                TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold), c
+                TextStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold), constraints = c
             ).size.height
             h += with(density) { 6.dp.toPx() }
             h += textMeasurer.measure(
-                AnnotatedString(item.category), TextStyle(fontSize = 13.sp), c
+                AnnotatedString(item.category), TextStyle(fontSize = 13.sp), constraints = c
             ).size.height
             if (item.description.isNotEmpty()) {
                 h += with(density) { 12.dp.toPx() }
                 h += textMeasurer.measure(
-                    AnnotatedString(item.description), TextStyle(fontSize = 15.sp), c
+                    AnnotatedString(item.description), TextStyle(fontSize = 15.sp), constraints = c
                 ).size.height
             }
             h += with(density) { 12.dp.toPx() + 1.dp.toPx() + 16.dp.toPx() + 8.dp.toPx() }
@@ -289,7 +289,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             val c = Constraints(maxWidth = textWidthPx)
             val textH = textMeasurer.measure(
                 AnnotatedString("正文已随 App 自带，离线也能读，无需下载。"),
-                TextStyle(fontSize = 12.sp), c
+                TextStyle(fontSize = 12.sp), constraints = c
             ).size.height
             with(density) { 8.dp.toPx() + 16.dp.toPx() + 1.dp.toPx() + 8.dp.toPx() } +
                 textH + with(density) { 16.dp.toPx() + 8.dp.toPx() }
@@ -299,7 +299,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     // 批注行高度：只在段落最后一块下面出现（13sp，最多 2 行，上面留 6dp）
     val noteHeightOf: (Int) -> Float = remember(textMeasurer, textWidthPx, notesMap) {
         val cache = mutableMapOf<Int, Float>()
-        { paraIdx: Int ->
+        val fn: (Int) -> Float = { paraIdx: Int ->
             cache.getOrPut(paraIdx) {
                 val note = notesMap[paraIdx]?.note.orEmpty()
                 if (note.isBlank() || textWidthPx <= 0) 0f
@@ -307,12 +307,13 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
                     val c = Constraints(maxWidth = textWidthPx)
                     val h = textMeasurer.measure(
                         AnnotatedString("✎ $note"),
-                        TextStyle(fontSize = 13.sp), c, maxLines = 2
+                        TextStyle(fontSize = 13.sp), constraints = c, maxLines = 2
                     ).size.height
                     h + with(density) { 6.dp.toPx() }
                 }
             }
         }
+        fn
     }
     val pages = remember(
         displayParagraphs, textMeasurer, measureStyle, textWidthPx, contentHeightPx,
@@ -367,23 +368,9 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
     // 关键词变了：重新找匹配，跳到第一个
     // 搜索时关键词和段落都先归一化成简体再比，所以繁体模式下打繁体字、
     // 简体模式下打简体字都能找到；转换是逐字一对一，下标和显示文本一一对应。
-    LaunchedEffect(query) {
-        if (query.isBlank()) {
-            matchIndices = emptyList()
-            currentMatch = 0
-        } else {
-            val normQuery = query.toSimplified()
-            val found = paragraphs.mapIndexedNotNull { idx, p ->
-                if (p.toSimplified().contains(normQuery, ignoreCase = true)) idx else null
-            }
-            matchIndices = found
-            currentMatch = 0
-            if (found.isNotEmpty()) jumpToPara(found[0], animate = false)
-        }
-    }
-
     /** 跳到某一段：滚动模式滚列表，仿真模式翻到那段所在的页。
-     * 分页还没算出来时先记下来（pendingJumpPara），算出来再跳。 */
+     * 分页还没算出来时先记下来（pendingJumpPara），算出来再跳。
+     * 注意：必须放在搜索 LaunchedEffect 前面——Kotlin 的局部函数只能在声明之后调用。 */
     fun jumpToPara(paraIdx: Int, animate: Boolean = true) {
         val target = paraIdx.coerceIn(0, paragraphs.size - 1)
         if (pageMode == PageTurnMode.PAGE) {
@@ -410,6 +397,21 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null, vocab: Vo
             pagerState.animateScrollToPage(
                 (pagerState.currentPage + 1).coerceAtMost((pages.size - 1).coerceAtLeast(0))
             )
+        }
+    }
+
+    LaunchedEffect(query) {
+        if (query.isBlank()) {
+            matchIndices = emptyList()
+            currentMatch = 0
+        } else {
+            val normQuery = query.toSimplified()
+            val found = paragraphs.mapIndexedNotNull { idx, p ->
+                if (p.toSimplified().contains(normQuery, ignoreCase = true)) idx else null
+            }
+            matchIndices = found
+            currentMatch = 0
+            if (found.isNotEmpty()) jumpToPara(found[0], animate = false)
         }
     }
 
