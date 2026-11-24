@@ -1,9 +1,13 @@
 package com.maihe.chengguang
 
 import android.content.Context
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -171,6 +175,7 @@ private fun highlightTtsSentence(paragraph: String, sentIdx: Int): AnnotatedStri
 
 // ---------- 阅读器 ----------
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
     val context = LocalContext.current
@@ -220,6 +225,13 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
 
     // 本本书的书签（段落下标集合）
     var bookmarks by remember { mutableStateOf(loadBookmarks(context, item.id)) }
+
+    // 批注笔记（二期第 5 块）：本地存，只影响显示，不动原文
+    val notesStore = remember { NotesStore(context) }
+    val notesMap = notesStore.notesFor(item.id)
+    var noteTarget by remember { mutableStateOf<Int?>(null) } // 长按弹出的划线/批注菜单
+    var editingNote by remember { mutableStateOf<Int?>(null) } // 写批注弹窗
+    var showMyNotes by remember { mutableStateOf(false) } // 我的批注列表
 
     // 打开时回到上次读到的地方（列表位置 1..N 才是正文段落，0 是标题头）
     LaunchedEffect(item.id) {
@@ -337,6 +349,13 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                     contentPadding = PaddingValues(horizontal = 10.dp)
                 ) { Text("我的书签", fontSize = 13.sp) }
                 OutlinedButton(
+                    onClick = { showMyNotes = true },
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    val noteCount = notesStore.entryCount(item.id)
+                    Text(if (noteCount > 0) "我的批注（$noteCount）" else "我的批注", fontSize = 13.sp)
+                }
+                OutlinedButton(
                     onClick = {
                         if (ttsActive) {
                             TtsReader.togglePause()
@@ -452,17 +471,47 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                     if (paragraph.isBlank()) {
                         Spacer(modifier = Modifier.height(10.dp))
                     } else {
-                        Text(
-                            text = when {
-                                ttsActive && idx == ttsPara -> highlightTtsSentence(paragraph, ttsSent)
-                                else -> highlightMatches(paragraph, if (showSearch) query else "")
-                            },
-                            fontSize = fontSize.sp,
-                            lineHeight = lineHeight.sp,
-                            color = theme.text,
-                            modifier = Modifier.padding(horizontal = 20.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        // 批注笔记：整段是划线底色（半透明，盖在主题底色上）；
+                        // 长按弹出划线/写批注菜单，点有批注的段落直接打开批注看/改。
+                        // 搜索命中词和听书跟读句子的金色底是标在字上的，叠在段落底色上面。
+                        val entry = notesMap[idx]
+                        val highlightBg = HighlightColor.fromKey(entry?.color)?.background
+                        val noteText = entry?.note.orEmpty()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(highlightBg ?: Color.Transparent)
+                                .combinedClickable(
+                                    onClick = {
+                                        if (noteText.isNotBlank()) editingNote = idx
+                                    },
+                                    onLongClick = { noteTarget = idx }
+                                )
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 20.dp)) {
+                                Text(
+                                    text = when {
+                                        ttsActive && idx == ttsPara -> highlightTtsSentence(paragraph, ttsSent)
+                                        else -> highlightMatches(paragraph, if (showSearch) query else "")
+                                    },
+                                    fontSize = fontSize.sp,
+                                    lineHeight = lineHeight.sp,
+                                    color = theme.text
+                                )
+                                // 批注标记：点一下看/改这条批注
+                                if (noteText.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "✎ $noteText",
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF9A7B2D),
+                                        maxLines = 2,
+                                        modifier = Modifier.clickable { editingNote = idx }
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+                        }
                     }
                 }
                 item {
@@ -663,6 +712,66 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                     }
                 }
             }
+        )
+    }
+
+    // 长按段落：划线 / 写批注
+    noteTarget?.let { targetIdx ->
+        ParagraphNoteMenuDialog(
+            paraIdx = targetIdx,
+            snippet = displayParagraphs.getOrNull(targetIdx)?.trim().orEmpty().take(60),
+            entry = notesMap[targetIdx],
+            muted = theme.muted,
+            onPickColor = { color ->
+                notesStore.setHighlight(item.id, targetIdx, color)
+                noteTarget = null
+            },
+            onClearHighlight = {
+                notesStore.setHighlight(item.id, targetIdx, null)
+                noteTarget = null
+            },
+            onEditNote = {
+                noteTarget = null
+                editingNote = targetIdx
+            },
+            onDismiss = { noteTarget = null }
+        )
+    }
+
+    // 写批注 / 编辑批注
+    editingNote?.let { editIdx ->
+        NoteEditorDialog(
+            paraIdx = editIdx,
+            initialNote = notesMap[editIdx]?.note.orEmpty(),
+            hasNote = !notesMap[editIdx]?.note.isNullOrBlank(),
+            onSave = { text ->
+                notesStore.setNote(item.id, editIdx, text)
+                editingNote = null
+            },
+            onDelete = {
+                notesStore.setNote(item.id, editIdx, "")
+                editingNote = null
+            },
+            onDismiss = { editingNote = null }
+        )
+    }
+
+    // 我的批注：列表 + 导出
+    if (showMyNotes) {
+        MyNotesDialog(
+            title = item.title,
+            paragraphs = paragraphs,
+            displayParagraphs = displayParagraphs,
+            notes = notesMap,
+            muted = theme.muted,
+            onJump = { paraIdx ->
+                showMyNotes = false
+                scope.launch { listState.scrollToItem(paraIdx + 1) }
+            },
+            onDelete = { paraIdx ->
+                notesStore.removeEntry(item.id, paraIdx)
+            },
+            onDismiss = { showMyNotes = false }
         )
     }
 
