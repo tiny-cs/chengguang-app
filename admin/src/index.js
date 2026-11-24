@@ -827,7 +827,7 @@ async function save() {
   var f = document.getElementById("file").files[0];
   var cat = document.getElementById("category").value;
   var isMedia = (cat === "主日信息" || cat === "灵修信息" || cat === "专题讲座");
-  // 音频/视频一律走分块上传：10MB 一块顺序上传，音频上限 500MB、视频上限 2GB
+  // 音频/视频一律走分块上传：10MB 一块、4 块并行上传，音频上限 500MB、视频上限 2GB
   if (isMedia && f) {
     await uploadChunked(title, cat, f);
     return;
@@ -845,7 +845,7 @@ async function save() {
   if (!d2.ok) { showMsg(d2.error || "上传失败", "msg2"); return; }
   showMsg("上传成功，App 打开就能看到", "msg2"); resetForm(); load();
 }
-// 分块上传：init -> 每块顺序 POST -> complete；中途失败就 abort 并报错
+// 分块上传：init -> 4 块并行 POST（每块 5 分钟超时、最多 3 次重试）-> complete；中途失败就 abort 并报错
 async function uploadChunked(title, category, file) {
   var prog = document.getElementById("upProg");
   var progText = document.getElementById("upProgText");
@@ -861,14 +861,34 @@ async function uploadChunked(title, category, file) {
     progText.textContent = "";
     showMsg(t, "msg2");
   }
-  var initR = await fetch("/api/upload/init", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: title, category: category,
-      description: document.getElementById("description").value,
-      duration: document.getElementById("duration").value,
-      filename: file.name, fileSize: file.size, contentType: file.type || "" }) });
-  var init = await initR.json();
-  if (!init.ok) { fail(init.error || "创建上传失败"); return; }
+  // 一点保存就先亮进度条，别让用户干等：创建上传（init）本身也要走网，
+  // 慢网上它也可能卡很久，以前要等它回来才出现进度条，看起来就像保存卡死了。
+  prog.style.display = "block";
+  prog.value = 0;
+  progText.textContent = "正在创建上传，请稍等…";
+  var init = null;
+  for (var initTry = 1; initTry <= 3; initTry++) {
+    var initCtl = new AbortController();
+    var initTimer = setTimeout(function () { initCtl.abort(); }, 30000);
+    try {
+      var initR = await fetch("/api/upload/init", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title, category: category,
+          description: document.getElementById("description").value,
+          duration: document.getElementById("duration").value,
+          filename: file.name, fileSize: file.size, contentType: file.type || "" }),
+        signal: initCtl.signal });
+      clearTimeout(initTimer);
+      init = await initR.json();
+      break;
+    } catch (e) {
+      clearTimeout(initTimer);
+      if (initTry < 3) {
+        progText.textContent = "创建上传没连上，正在重试（第 " + initTry + " 次）…";
+      }
+    }
+  }
+  if (!init || !init.ok) { fail((init && init.error) || "创建上传失败，请检查网络后重试"); return; }
   totalParts = Math.ceil(file.size / init.partSize);
   // 4 块并行传：以前是一块一块等，慢网下一块的来回等待占了不少时间；
   // 并行后同一时间有 4 块在传。服务端按 partNumber 排序合并，乱序也没事。
