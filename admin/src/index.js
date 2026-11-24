@@ -877,14 +877,32 @@ async function uploadChunked(title, category, file) {
   var CONCURRENCY = 4;
   async function uploadOnePart(i) {
     var chunk = file.slice(i * init.partSize, (i + 1) * init.partSize);
-    var r = await fetch("/api/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
-      + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
-      { method: "POST", body: chunk });
-    var d = await r.json();
-    if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
-    parts[i] = { partNumber: d.partNumber, etag: d.etag };
-    doneCount++;
-    setProg(doneCount, totalParts);
+    var lastErr = null;
+    // 每块最多试 3 次：一次请求超过 5 分钟没回音就当它卡死了，取消重传。
+    // 10MB 一块在 40KB/s 的慢网下也要约 4 分钟，5 分钟够走完，卡住不动的才会被掐掉。
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      var controller = new AbortController();
+      var timer = setTimeout(function () { controller.abort(); }, 300000);
+      try {
+        var r = await fetch("/api/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
+          + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
+          { method: "POST", body: chunk, signal: controller.signal });
+        clearTimeout(timer);
+        var d = await r.json();
+        if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
+        parts[i] = { partNumber: d.partNumber, etag: d.etag };
+        doneCount++;
+        setProg(doneCount, totalParts);
+        return;
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = e;
+        if (attempt < 3) {
+          progText.textContent = "第 " + (i + 1) + " 块没传上去，正在重试（第 " + attempt + " 次）…";
+        }
+      }
+    }
+    throw lastErr || new Error("第 " + (i + 1) + " 块上传失败");
   }
   try {
     var next = 0;
