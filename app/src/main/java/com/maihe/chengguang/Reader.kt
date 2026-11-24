@@ -139,17 +139,22 @@ private fun isChapterHeading(line: String): Boolean {
 
 // ---------- 搜索高亮 ----------
 
-/** 把段落里所有关键词标上金色底；关键词为空时原样返回。 */
+/** 把段落里所有关键词标上金色底；关键词为空时原样返回。
+ * 找位置时先把显示文本和关键词都归一化成简体再比（繁体字也能搜到），
+ * 转换是逐字一对一，归一化后的下标和显示文本一一对应，可以直接用来标底色。 */
 private fun highlightMatches(text: String, query: String): AnnotatedString {
     if (query.isBlank()) return AnnotatedString(text)
+    val normText = text.toSimplified()
+    val normQuery = query.toSimplified()
+    if (normQuery.isEmpty()) return AnnotatedString(text)
     return buildAnnotatedString {
         append(text)
         var from = 0
         while (true) {
-            val found = text.indexOf(query, from, ignoreCase = true)
+            val found = normText.indexOf(normQuery, from, ignoreCase = true)
             if (found < 0) break
-            addStyle(SpanStyle(background = Color(0xFFFFD54F)), found, found + query.length)
-            from = found + query.length
+            addStyle(SpanStyle(background = Color(0xFFFFD54F)), found, found + normQuery.length)
+            from = found + normQuery.length
         }
     }
 }
@@ -175,10 +180,19 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
     val paragraphs = remember(item.id, item.content) {
         item.content.ifEmpty { "（正文待管理员上传）" }.split("\n")
     }
-    // 章节：段落下标 -> 标题
-    val chapters = remember(paragraphs) {
+    // 简繁（持久化，默认简体；只影响正文显示，原文不动）
+    var scriptMode by remember { mutableStateOf(loadScriptMode(context)) }
+    // 显示用段落：繁体模式下逐字转换；简体模式就是原文。
+    // 段落数量和顺序不变，所以书签、目录、阅读进度、听书都按原下标照旧。
+    val displayParagraphs = remember(paragraphs, scriptMode) {
+        if (scriptMode == ScriptMode.TRADITIONAL) paragraphs.map { it.toTraditional() }
+        else paragraphs
+    }
+    // 章节：段落下标 -> 标题（在原文上检测，因为繁体的“節”不在检测正则里；
+    // 显示时再按当前字体转换标题）
+    val chapters = remember(paragraphs, scriptMode) {
         paragraphs.mapIndexedNotNull { idx, p ->
-            if (isChapterHeading(p)) idx to p.trim() else null
+            if (isChapterHeading(p)) idx to p.trim().convertScript(scriptMode) else null
         }
     }
 
@@ -229,13 +243,16 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
     }
 
     // 关键词变了：重新找匹配，跳到第一个
+    // 搜索时关键词和段落都先归一化成简体再比，所以繁体模式下打繁体字、
+    // 简体模式下打简体字都能找到；转换是逐字一对一，下标和显示文本一一对应。
     LaunchedEffect(query) {
         if (query.isBlank()) {
             matchIndices = emptyList()
             currentMatch = 0
         } else {
+            val normQuery = query.toSimplified()
             val found = paragraphs.mapIndexedNotNull { idx, p ->
-                if (p.contains(query, ignoreCase = true)) idx else null
+                if (p.toSimplified().contains(normQuery, ignoreCase = true)) idx else null
             }
             matchIndices = found
             currentMatch = 0
@@ -430,8 +447,8 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                         Spacer(modifier = Modifier.height(16.dp))
                     }
                 }
-                items(paragraphs.size) { idx ->
-                    val paragraph = paragraphs[idx]
+                items(displayParagraphs.size) { idx ->
+                    val paragraph = displayParagraphs[idx]
                     if (paragraph.isBlank()) {
                         Spacer(modifier = Modifier.height(10.dp))
                     } else {
@@ -552,6 +569,15 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                             saveReaderTheme(context, theme)
                         }
                     )
+                    OptionRow(
+                        label = "简繁",
+                        options = ScriptMode.values().map { it.label },
+                        selected = scriptMode.ordinal,
+                        onSelect = {
+                            scriptMode = ScriptMode.values()[it]
+                            saveScriptMode(context, scriptMode)
+                        }
+                    )
                 }
             }
         )
@@ -607,7 +633,7 @@ fun ReaderScreen(item: CatalogItem, bookshelf: BookshelfStore? = null) {
                 } else {
                     LazyColumn(modifier = Modifier.height(320.dp)) {
                         items(sorted) { paraIdx ->
-                            val label = paragraphs.getOrNull(paraIdx)?.trim().orEmpty()
+                            val label = displayParagraphs.getOrNull(paraIdx)?.trim().orEmpty()
                                 .take(20).ifEmpty { "第 ${paraIdx + 1} 段" }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
