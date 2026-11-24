@@ -1,9 +1,14 @@
 package com.maihe.chengguang
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -68,12 +73,14 @@ private val Gold = Color(0xFF9A7B2D)
 private val Paper = Color(0xFFFAF7F0)
 private val Purple = Color(0xFF6A4C93)
 private val Leaf = Color(0xFF4C8C4A)
+private val Teal = Color(0xFF2E7D6B)
 
 fun categoryColor(category: String): Color = when (category) {
     "属灵书籍" -> Gold
     "生命诗歌" -> Navy
     "主日信息" -> Purple
     "灵修信息" -> Leaf
+    "专题讲座" -> Teal
     else -> Navy
 }
 
@@ -86,8 +93,17 @@ sealed interface Route {
 }
 
 class MainActivity : ComponentActivity() {
+    // Android 13+：通知栏播放控制要这个权限。没给也能后台播，只是通知栏不显示控制按钮。
+    private val requestNotificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme(
                 colorScheme = lightColorScheme(
@@ -297,6 +313,7 @@ fun CategoryCard(name: String, count: Int, modifier: Modifier = Modifier, onClic
                         "生命诗歌" -> "诗"
                         "主日信息" -> "主"
                         "灵修信息" -> "灵"
+                        "专题讲座" -> "专"
                         else -> "城"
                     },
                     color = Color.White,
@@ -544,7 +561,7 @@ fun MineScreen(items: List<CatalogItem>, downloads: DownloadStore, onItem: (Cata
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("城光是属灵内容 App：属灵书籍、生命诗歌、主日信息、灵修信息。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
+                    Text("城光是属灵内容 App：属灵书籍、生命诗歌、主日信息、灵修信息、专题讲座。内容由管理员统一上传，读者只管阅读收听。", fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("版本：${BuildConfig.VERSION_NAME}（远程目录版）", fontSize = 13.sp, color = Color.Gray)
                 }

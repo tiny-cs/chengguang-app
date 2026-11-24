@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- “仅 WiFi 下载”开关要判断当前是不是 WiFi -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 后台播放：前台 Service 保活 + 通知栏控制 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".ChengguangApplication"
@@ -29,6 +33,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- 后台播放的前台 Service：只负责保活和通知栏控制，播放器在 AudioPlayer 单例里 -->
+        <service
+            android:name=".PlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
     </application>
 
 </manifest>

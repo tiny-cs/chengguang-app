@@ -3,7 +3,6 @@ package com.maihe.chengguang
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Environment
 import android.widget.MediaController
@@ -40,10 +39,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -261,16 +258,6 @@ enum class PlayMode(val label: String) {
     ORDER("顺序播放"), SINGLE("单曲循环"), LOOP_ALL("列表循环"), SHUFFLE("随机播放")
 }
 
-private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
-
-private fun speedLabel(speed: Float): String = when (speed) {
-    0.75f -> "0.75x"
-    1f -> "1.0x"
-    1.25f -> "1.25x"
-    1.5f -> "1.5x"
-    else -> "2.0x"
-}
-
 @Composable
 fun AudioDetail(
     item: CatalogItem,
@@ -278,142 +265,52 @@ fun AudioDetail(
     siblings: List<CatalogItem> = emptyList(),
     onSelectItem: (String) -> Unit = {}
 ) {
-    val player = remember { MediaPlayer() }
-    var status by remember { mutableStateOf("准备中…") }
-    var isPlaying by remember { mutableStateOf(false) }
-    var durationMs by remember { mutableIntStateOf(0) }
-    var positionMs by remember { mutableIntStateOf(0) }
-    var speed by remember { mutableStateOf(1f) }
-    var mode by remember { mutableStateOf(PlayMode.ORDER) }
-    // 监听器里读到的永远是最新的模式和列表（否则切了模式、播完还按旧的来）
-    val modeState = rememberUpdatedState(mode)
-    val siblingsState = rememberUpdatedState(siblings)
-    val selectState = rememberUpdatedState(onSelectItem)
-
-    // 播放地址：已下载用本地文件，否则用远程链接。下载完成时地址会变，
-    // 重新准备播放器，下次播放就走离线文件。
+    val context = LocalContext.current
+    // 播放地址：已下载用本地文件，否则用远程链接
     val source = downloads.playSource(item)
+    val offline = downloads.isDownloaded(item)
 
-    fun applySpeed() {
-        if (speed == 1f) return
-        try {
-            player.playbackParams = player.playbackParams.setSpeed(speed)
-        } catch (_: Exception) {
-            // 没准备好时调倍速会抛异常，等准备好再调
+    // 详情页可见时：把同栏目列表交给播放器（切歌用），切歌时让页面换路由
+    DisposableEffect(item.id) {
+        AudioPlayer.queue = siblings
+        AudioPlayer.onCurrentChanged = { next ->
+            if (next.id != item.id) onSelectItem(next.id)
+        }
+        onDispose { AudioPlayer.onCurrentChanged = null }
+    }
+
+    // 进这个页面：如果播的不是这首——
+    //   * 别的歌正在播：别打断它，只等用户点播放再切过来；
+    //   * 没在播：已下载的直接自动播，远程的先准备好、等用户点播放（避免一打开就偷跑流量）。
+    // 如果正在播这首但地址变了（如下载完成变成离线文件），用新地址重新准备，播着的继续播。
+    LaunchedEffect(item.id, source) {
+        if (AudioPlayer.currentItem?.id != item.id) {
+            if (!AudioPlayer.isPlaying) {
+                AudioPlayer.play(context, item, source, offline, autoStart = offline)
+            }
+        } else if (AudioPlayer.currentSource != source) {
+            AudioPlayer.play(context, item, source, offline, autoStart = AudioPlayer.isPlaying)
         }
     }
 
-    fun nextTrack() {
-        val list = siblingsState.value
-        if (list.size <= 1) {
-            // 只有一首：回到开头重播
-            try {
-                player.seekTo(0)
-                player.start()
-            } catch (_: Exception) {
-            }
-            isPlaying = true
-            positionMs = 0
-            status = "正在播放"
-            return
-        }
-        val idx = list.indexOfFirst { it.id == item.id }
-        val next = when (modeState.value) {
-            PlayMode.SHUFFLE -> list.filter { it.id != item.id }.random()
-            else -> list[(idx + 1).mod(list.size)]
-        }
-        selectState.value(next.id)
-    }
-
-    fun onTrackEnded() {
-        when (modeState.value) {
-            PlayMode.SINGLE -> {
-                try {
-                    player.seekTo(0)
-                    player.start()
-                    isPlaying = true
-                    positionMs = 0
-                    status = "正在播放"
-                } catch (_: Exception) {
-                    isPlaying = false
-                    positionMs = 0
-                    status = "已播完"
-                }
-            }
-            PlayMode.ORDER -> {
-                val list = siblingsState.value
-                val idx = list.indexOfFirst { it.id == item.id }
-                if (idx >= 0 && idx < list.size - 1) {
-                    selectState.value(list[idx + 1].id)
-                } else {
-                    isPlaying = false
-                    positionMs = 0
-                    status = "已播完"
-                }
-            }
-            PlayMode.LOOP_ALL, PlayMode.SHUFFLE -> nextTrack()
-        }
-    }
-
-    fun prepare(autoStart: Boolean) {
-        status = "准备中…"
-        try {
-            player.reset()
-            player.setDataSource(source)
-            player.setOnPreparedListener {
-                durationMs = it.duration
-                status = if (downloads.isDownloaded(item)) "已就绪（离线播放）" else "已就绪"
-                applySpeed()
-                if (autoStart) {
-                    try {
-                        player.start()
-                        isPlaying = true
-                        status = "正在播放"
-                    } catch (_: Exception) {
-                        status = "播放失败，请重试"
-                        reportMessage("audio-playback", item.title)
-                    }
-                }
-            }
-            player.setOnErrorListener { _, _, _ ->
-                status = "加载失败，请检查网络"
-                isPlaying = false
-                reportMessage("audio-playback", item.title)
-                true
-            }
-            player.setOnCompletionListener { onTrackEnded() }
-            player.prepareAsync()
-        } catch (_: Exception) {
-            status = "加载失败，请检查网络"
-            reportMessage("audio-playback", item.title)
-        }
-    }
-
-    LaunchedEffect(source) {
-        isPlaying = false
-        positionMs = 0
-        speed = 1f
-        prepare(false)
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            try {
-                player.release()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            try {
-                positionMs = player.currentPosition
-            } catch (_: Exception) {
-            }
+    // 播着的时候每 0.5 秒刷一次进度条
+    LaunchedEffect(AudioPlayer.isPlaying) {
+        while (AudioPlayer.isPlaying) {
+            AudioPlayer.refreshPosition()
             delay(500)
         }
     }
+
+    // 播放状态都存在 AudioPlayer 单例里：离开这个页面也不会丢，回来继续显示
+    val status = AudioPlayer.status
+    val isPlaying = AudioPlayer.isPlaying
+    val mode = AudioPlayer.mode
+    // 正在播别的歌：这个页面显示那首的状态，进度条先不动，点播放就切到这首
+    val playingOther = AudioPlayer.currentItem?.id != null && AudioPlayer.currentItem?.id != item.id
+    val shownPosition = if (playingOther) 0 else AudioPlayer.positionMs
+    val shownDuration = if (playingOther) 0 else AudioPlayer.durationMs
+    val statusText = if (playingOther && isPlaying) "正在播：${AudioPlayer.currentItem?.title}" else status
+    var dragMs by remember { mutableStateOf<Int?>(null) }
 
     Column(
         modifier = Modifier
@@ -441,50 +338,14 @@ fun AudioDetail(
         }
         Spacer(modifier = Modifier.height(28.dp))
         IconButton(
-            onClick = {
-                if (status == "加载失败，请检查网络" || status == "播放失败，请重试") {
-                    // 准备失败时再点一次就是重试：重新准备，准备好自动开始播
-                    prepare(true)
-                    return@IconButton
-                }
-                // 播放按钮只在“能播”的状态下起作用：就绪、播完、已暂停，以及正在播放时点暂停。
-                // 注意：暂停后状态是“已暂停”，以前漏了这个状态，点播放没反应。
-                if (status == "已就绪" || status == "已就绪（离线播放）" || status == "已播完" || status == "已暂停" || isPlaying) {
-                    if (isPlaying) {
-                        try {
-                            player.pause()
-                        } catch (_: Exception) {
-                            reportMessage("audio-pause", item.title)
-                        }
-                        isPlaying = false
-                        status = "已暂停"
-                    } else {
-                        if (status == "已播完") {
-                            try {
-                                player.seekTo(0)
-                            } catch (_: Exception) {
-                            }
-                            positionMs = 0
-                        }
-                        try {
-                            player.start()
-                        } catch (_: Exception) {
-                            status = "播放失败，请重试"
-                            reportMessage("audio-playback", item.title)
-                            return@IconButton
-                        }
-                        isPlaying = true
-                        status = "正在播放"
-                    }
-                }
-            },
+            onClick = { AudioPlayer.toggle(context, item, source, offline) },
             modifier = Modifier
                 .size(72.dp)
                 .background(Color(0xFF9A7B2D), CircleShape)
         ) {
             Icon(
-                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "暂停" else "播放",
+                if (isPlaying && !playingOther) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (isPlaying && !playingOther) "暂停" else "播放",
                 tint = Color.White,
                 modifier = Modifier.size(40.dp)
             )
@@ -494,39 +355,33 @@ fun AudioDetail(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            OutlinedButton(onClick = {
-                val idx = SPEEDS.indexOf(speed)
-                speed = SPEEDS[(idx + 1).mod(SPEEDS.size)]
-                applySpeed()
-            }) { Text("倍速 ${speedLabel(speed)}", fontSize = 14.sp) }
-            OutlinedButton(onClick = {
-                val values = PlayMode.values()
-                mode = values[(values.indexOf(mode) + 1).mod(values.size)]
-            }) { Text("模式：${mode.label}", fontSize = 14.sp) }
-            OutlinedButton(onClick = { nextTrack() }) { Text("下一首", fontSize = 14.sp) }
+            OutlinedButton(onClick = { AudioPlayer.cycleSpeed() }) { Text("倍速 ${AudioPlayer.speedLabel()}", fontSize = 14.sp) }
+            OutlinedButton(onClick = { AudioPlayer.cycleMode() }) { Text("模式：${mode.label}", fontSize = 14.sp) }
+            OutlinedButton(onClick = { AudioPlayer.next() }) { Text("下一首", fontSize = 14.sp) }
         }
         Spacer(modifier = Modifier.height(20.dp))
         Slider(
-            value = positionMs.toFloat(),
-            onValueChange = { positionMs = it.toInt() },
+            value = (dragMs ?: shownPosition).toFloat(),
+            onValueChange = { dragMs = it.toInt() },
             onValueChangeFinished = {
-                try {
-                    player.seekTo(positionMs)
-                } catch (_: Exception) {
-                }
+                dragMs?.let { AudioPlayer.seekTo(it) }
+                dragMs = null
             },
-            valueRange = 0f..(durationMs.coerceAtLeast(1)).toFloat(),
+            valueRange = 0f..(shownDuration.coerceAtLeast(1)).toFloat(),
+            enabled = !playingOther,
             modifier = Modifier.fillMaxWidth()
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(formatMs(positionMs), fontSize = 13.sp, color = Color.Gray)
-            Text(if (durationMs > 0) formatMs(durationMs) else item.duration, fontSize = 13.sp, color = Color.Gray)
+            Text(formatMs(dragMs ?: shownPosition), fontSize = 13.sp, color = Color.Gray)
+            Text(if (shownDuration > 0) formatMs(shownDuration) else item.duration, fontSize = 13.sp, color = Color.Gray)
         }
         Spacer(modifier = Modifier.height(16.dp))
-        Text(status, fontSize = 13.sp, color = Color.Gray)
+        Text(statusText, fontSize = 13.sp, color = Color.Gray)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("离开这个页面也会继续播，通知栏里可以暂停或停止", fontSize = 12.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))
         Text("内容由管理员在后台上传", fontSize = 12.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(20.dp))

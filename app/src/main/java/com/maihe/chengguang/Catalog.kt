@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -29,7 +30,7 @@ data class CatalogItem(
     val createdAt: String = ""
 )
 
-val CATEGORIES = listOf("属灵书籍", "生命诗歌", "主日信息", "灵修信息")
+val CATEGORIES = listOf("属灵书籍", "生命诗歌", "主日信息", "灵修信息", "专题讲座")
 
 /**
  * 管理后台的目录地址（自定义域名，国内可访问）：
@@ -76,8 +77,8 @@ fun fetchRemoteCatalog(): List<CatalogItem>? {
     var conn: HttpURLConnection? = null
     return try {
         conn = (URL(REMOTE_CATALOG_URL).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 6000
-            readTimeout = 6000
+            connectTimeout = 10000
+            readTimeout = 15000
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
         }
@@ -85,6 +86,9 @@ fun fetchRemoteCatalog(): List<CatalogItem>? {
         val text = conn.inputStream.bufferedReader().use { it.readText() }
         val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
         items.filter { it.status.isBlank() || it.status == "published" }
+    } catch (_: IOException) {
+        // 没网、超时、连接被关：慢网络下的正常情况，静默用内置目录，不上报 Sentry
+        null
     } catch (e: Exception) {
         reportError("catalog", e)
         null
