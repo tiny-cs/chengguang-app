@@ -210,14 +210,16 @@ fun ChengguangApp() {
     }
 
     LaunchedEffect(Unit) {
-        loginState = if (!memberAuth.isLoggedIn) {
-            LoginState.LoggedOut
-        } else if (withContext(Dispatchers.IO) { memberAuth.validate() }) {
-            LoginState.LoggedIn
+        if (!memberAuth.isLoggedIn) {
+            loginState = LoginState.LoggedOut
         } else {
-            // 401：账号被停用或 token 失效——下载也一起清掉，不只回到登录页
-            withContext(Dispatchers.IO) { logoutAndWipeData(context, memberAuth, downloads) }
-            LoginState.LoggedOut
+            // 有 token 就先进内容（先显示缓存目录），校验在后台跑：
+            // 慢网下打开不再卡在“正在确认登录”；账号被停用或 token 失效时
+            // 再清掉下载和缓存、回登录页。
+            loginState = LoginState.LoggedIn
+            if (!withContext(Dispatchers.IO) { memberAuth.validate() }) {
+                logoutAndWipe()
+            }
         }
     }
 
