@@ -21,11 +21,12 @@ admin/
   另外每条还有 `mustRead`（布尔，默认 false）：勾上后 App 里标题显示红色；老条目没有这个字段时按 false 处理。
   App 读的时候只认 published 的；Worker 返回 `/catalog.json` 时也只给 published 的。
 - **密码**：Worker Secret `ADMIN_PASSWORD`，不在代码、不在仓库里。
-- **成员账号**（v1.15.0 起）：R2 里的 `members.json`（`{ users: { 账号名: { salt, hash, disabled, createdAt, lastLoginAt } } }`），
+- **成员账号**（v1.15.0 起）：R2 里的 `members.json`（`{ users: { 账号名: { salt, hash, disabled, canUpload, createdAt, lastLoginAt } } }`），
   密码只存加盐 SHA-256，不存明文；会话在 `sessions.json`（`{ tokens: { token: { username, expiresAt } } }`），
-  登录一次管 30 天。管理页“成员账号”里建账号、停用、启用、删除。停用会立刻删掉该账号的全部会话，
-  App 下次打开（或拉目录）时返回 401，自动回到登录页并清掉下载。成员列表里还显示“最后登录”时间：
-  登录成功时记一次，打开 App 校验登录时也更新一次，所以看到的就是谁最近在用（v1.15.1 起）。
+  登录一次管 30 天。管理页“成员账号”里建账号、停用、启用、删除，还能开关“可上传”（`canUpload`，2026-11-26 起）。
+  停用会立刻删掉该账号的全部会话，App 下次打开（或拉目录）时返回 401，自动回到登录页并清掉下载。
+  成员列表里还显示“最后登录”时间：登录成功时记一次，打开 App 校验登录时也更新一次，所以看到的就是谁最近在用（v1.15.1 起）。
+  只有 `canUpload` 为真的账号能在上传页（`/upload`）传内容，传完是 `pending` 待审核（见下）。
 
 ## 接口
 
@@ -36,11 +37,21 @@ admin/
 | GET | `/file/media/<id>.<ext>` | 播放 / 下载文件（要成员登录，走 Worker 代理，支持断点续传 Range） |
 | POST | `/api/member/login` | 成员登录（公开）：`{username, password}` → `{ok, username, token}` + 写 HttpOnly Cookie `cg_member`（30 天）；账号或密码不对、账号被停用都返回 401，错误文案不区分是哪种 |
 | POST | `/api/member/logout` | 成员退出（公开，带 token）：删会话 + 清 Cookie |
-| GET | `/api/member/me` | 成员是否已登录（要成员登录） |
-| GET | `/api/members` | 成员列表（要管理员登录）：只返回账号名、是否停用、创建时间、最后登录时间，不返回密码散列 |
-| POST | `/api/members` | 建成员账号（要管理员登录）：`{username, password}`，账号名 1–30 字（字母、数字、下划线、中文、点、横杠），密码 ≥6 位 |
+| GET | `/api/member/me` | 成员是否已登录（要成员登录）：返回 `{ok, username, canUpload}` |
+| GET | `/upload` | 成员上传页（中文，不用先登录，页里自己登录；没开上传权限的账号只看到提示） |
+| GET | `/api/member/uploads` | 我的上传（要成员登录）：只列这个账号自己传的（含待审核的），不带正文 |
+| POST | `/api/member/upload` | 成员单次上传（要成员登录 + 可上传）：multipart，书籍 / 诗歌 / 小文件，写 `pending` 待审核；书籍附件只收 PDF |
+| POST | `/api/member/upload/init` | 成员分块上传第 1 步（要成员登录 + 可上传）：建分块上传，返回 uploadId / key / partSize=10MB |
+| POST | `/api/member/upload/part?uploadId=&key=&partNumber=` | 成员分块上传第 2 步（要成员登录 + 可上传）：body 为一块原始数据（10MB） |
+| POST | `/api/member/upload/complete` | 成员分块上传第 3 步（要成员登录 + 可上传）：合并分块并写目录，写 `pending` 待审核 |
+| POST | `/api/member/upload/abort` | 成员取消未完成的分块上传（要成员登录 + 可上传） |
+| POST | `/api/items/:id/approve` | 审核通过（要管理员登录）：把 `pending` 改成 `published`，App 下次打开就能看到 |
+| GET | `/api/members` | 成员列表（要管理员登录）：只返回账号名、是否停用、是否可上传、创建时间、最后登录时间，不返回密码散列 |
+| POST | `/api/members` | 建成员账号（要管理员登录）：`{username, password, canUpload?}`，账号名 1–30 字（字母、数字、下划线、中文、点、横杠），密码 ≥6 位 |
 | POST | `/api/members/:name/disable` | 停用成员（要管理员登录）：同时删掉该账号的全部会话，App 立刻断开 |
 | POST | `/api/members/:name/enable` | 启用成员（要管理员登录） |
+| POST | `/api/members/:name/canupload` | 给成员开上传权限（要管理员登录） |
+| POST | `/api/members/:name/nocanupload` | 给成员关上传权限（要管理员登录） |
 | DELETE | `/api/members/:name` | 删成员账号（要管理员登录）：同时删掉该账号的全部会话 |
 | POST | `/api/login` | `{password}` → 写 HttpOnly Cookie `cg_admin`（30 天） |
 | POST | `/api/logout` | 清 Cookie |
@@ -92,13 +103,18 @@ admin/
   它们名下的 8 条示例内容请在后台“全部内容”里手动删除（种子目录里已去掉，线上旧目录不受重新部署影响）。
 - 上传后立即进目录，App 下次打开就能看到，不用重新打包 App。
 
-## 以后加“指定人上传、管理员审核”
+## 指定人上传、管理员审核（2026-11-26 已建成，App 不用改）
 
-不用重做：记录里已有 `status` 和 `uploadedBy` 字段。到时：
-
-1. 上传接口按上传者身份写 `status: "pending"`（现在管理员上传直接写 `published`）；
-2. 管理页加一栏“待审核”，管理员点“通过”把 `status` 改成 `published`，点“不通过”删除；
-3. App 和 `/catalog.json` 本来就只返回 published，不用改。
+- **开权限**：管理页“成员账号”里建账号时勾“允许上传”，或给已有账号点“允许上传”；关掉点“取消上传”。
+  只有 `canUpload` 为真的账号能在上传页传，别的账号登录上传页只看到“还没有上传权限”。
+- **传内容**：上传页是 `/upload`（`https://admin.maihe334.ccwu.cc/upload`），成员用自己的账号登录后传：
+  标题、栏目、简介、正文（书籍 / 诗歌）、音频 / 视频文件（大文件走分块上传，和管理页一样 10MB 一块、4 块并行）。
+  讲章、歌谱、原书 PDF 以外的附件这次没给成员入口，通过后管理员在管理页编辑里补传。
+  传完写 `status: "pending"`、`uploadedBy: 账号名`，不直接上架；一个人待审核的最多留 50 条，超了要等管理员先审一批。
+- **审核**：管理页“全部内容”里待审核的标红显示“待审核 · 由 xxx 上传”，点“通过”改成 `published`，
+  点“驳回”就是删除（目录和 R2 文件一起删）。通过后 App 下次打开就能看到，不用重新打包 App。
+- **看不到**：`/catalog.json`、`/catalog-lite.json` 只给 `published` 的；`/api/member/items/:id` 待审核的返回 404。
+  成员在上传页“我的上传”里能看到自己传的每条是“待审核”还是“已上架”。
 
 ## 上线顺序（v1.15.1，成员登录 + 最后登录时间 + WiFi 自动下载）
 

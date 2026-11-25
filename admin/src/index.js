@@ -2,9 +2,9 @@
 // 部署：见同目录 DEPLOY.md。R2 桶名 chengguang，绑定名 CHENGGUANG_BUCKET。
 // 管理员密码存在 Worker Secret ADMIN_PASSWORD 里，不在代码里。
 // 目录存在 R2 的 catalog.json；音视频文件存在 R2 的 media/ 下，App 只存链接。
-// 预留字段：每条记录有 status（published / pending）和 uploadedBy，
-// 以后“指定人上传、管理员审核”就是：上传的人写 status=pending，
-// 管理员在后台点通过改成 published；App 只拉 published 的。
+// 指定人上传（2026-11-26 建成）：成员账号有 canUpload 标记，只有管理员
+// 勾上的账号能在 /upload 页上传；上传的人写 status=pending、uploadedBy=账号名，
+// 管理员在管理页点通过改成 published，点驳回删除；App 只拉 published 的。
 
 const CATEGORIES = ["属灵书籍", "敬拜赞美", "主日信息", "灵修信息", "专题讲座"];
 const TYPE_BY_CATEGORY = { "属灵书籍": "book", "敬拜赞美": "poem", "主日信息": "audio", "灵修信息": "audio", "专题讲座": "audio" };
@@ -185,6 +185,26 @@ async function requireMember(request, env) {
   if (!username) return err("请先登录", 401);
   return null;
 }
+// 验可上传成员：登录有效、且管理员给这个账号勾了“可上传”，才算能传。
+// 返回 { username }，验不过返回 { error }（error 是直接能返回的 Response）。
+async function requireUploader(request, env) {
+  const username = await validMember(request, env);
+  if (!username) return { error: err("请先登录", 401) };
+  const members = await readMembers(env);
+  const u = members.users[username];
+  if (!u || !u.canUpload) return { error: err("这个账号没有上传权限，请联系管理员开通", 403) };
+  return { username };
+}
+// 某人待审核的条数（防刷：待审太多时先等管理员审一批再传）
+const MAX_PENDING_PER_MEMBER = 50;
+async function pendingCountFor(env, username) {
+  const items = await readCatalog(env);
+  let n = 0;
+  for (const it of items) {
+    if ((it.status || "published") === "pending" && it.uploadedBy === username) n++;
+  }
+  return n;
+}
 
 // ---- 鉴权：单管理员密码，存在 Secret ADMIN_PASSWORD ----
 async function adminToken(env) {
@@ -260,7 +280,8 @@ export default {
       const id = decodeURIComponent(path.slice("/api/member/items/".length));
       const items = await readCatalog(env);
       const item = items.find((it) => it.id === id);
-      if (!item) return err("找不到这条内容", 404);
+      // 待审核的不给成员看：没通过之前只有管理员能在后台看到
+      if (!item || (item.status || "published") !== "published") return err("找不到这条内容", 404);
       return json({ ok: true, item });
     }
 
@@ -404,14 +425,230 @@ export default {
       const username = await validMember(request, env);
       if (!username) return err("请先登录", 401);
       // 打开 App 校验时也更新一次：后台看到的就是谁最近在用（写失败不影响校验结果）
+      // 顺带把 canUpload 带回去，上传页用它判断这个账号能不能传
+      let canUpload = false;
       try {
         const members = await readMembers(env);
         if (members.users[username]) {
           members.users[username].lastLoginAt = new Date().toISOString();
           await writeMembers(env, members);
+          canUpload = !!members.users[username].canUpload;
         }
       } catch (e) { /* ignore */ }
-      return json({ ok: true, username }, 200, { "Access-Control-Allow-Origin": "*" });
+      return json({ ok: true, username, canUpload }, 200, { "Access-Control-Allow-Origin": "*" });
+    }
+
+    // ---- 成员上传页（/upload）：成员用自己的账号登录后传内容，传完待审核 ----
+    if (path === "/upload" && request.method === "GET") {
+      return new Response(MEMBER_UPLOAD_HTML, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+
+    // ---- 我的上传：只列这个账号自己传的（含待审核的），不带正文 ----
+    if (path === "/api/member/uploads" && request.method === "GET") {
+      const username = await validMember(request, env);
+      if (!username) return err("请先登录", 401);
+      const items = await readCatalog(env);
+      const mine = items
+        .filter((it) => it.uploadedBy === username)
+        .map((it) => { const copy = { ...it }; delete copy.content; return copy; });
+      return json({ ok: true, items: mine });
+    }
+
+    // ---- 成员上传（单次，multipart）：书籍 / 诗歌 / 小文件；音视频大文件走分块上传 ----
+    // 传完写 status=pending、uploadedBy=账号名，不直接上架；必读标记只有管理员能勾，成员传的一律 false。
+    if (path === "/api/member/upload" && request.method === "POST") {
+      const up = await requireUploader(request, env);
+      if (up.error) return up.error;
+      const username = up.username;
+      if ((await pendingCountFor(env, username)) >= MAX_PENDING_PER_MEMBER) return err("你待审核的内容太多了（已有 50 条），等管理员先审一批再传");
+      let form;
+      try { form = await request.formData(); } catch (e) { return err("表单解析失败"); }
+      const title = String(form.get("title") || "").trim();
+      const category = String(form.get("category") || "").trim();
+      const description = String(form.get("description") || "").trim();
+      const duration = String(form.get("duration") || "").trim();
+      const content = String(form.get("content") || "");
+      const file = form.get("file");
+      if (!title) return err("请填写标题");
+      if (!CATEGORIES.includes(category)) return err("栏目不对");
+      const baseType = TYPE_BY_CATEGORY[category];
+      let type = baseType;
+      if (MEDIA_CATEGORIES.includes(category)) {
+        if (!file || file.size === 0) return err("音频/视频请先选一个文件");
+        type = mediaTypeForExt(extOf(file.name));
+        if (!type) return err("不支持的文件格式：请传音频（" + AUDIO_EXTS.join("、") + "）或视频（" + VIDEO_EXTS.join("、") + "）");
+      } else if (category === "敬拜赞美" && file && file.size > 0) {
+        type = mediaTypeForExt(extOf(file.name));
+        if (type !== "audio") return err("敬拜赞美只收音频文件（" + AUDIO_EXTS.join("、") + "），或只填歌词不传文件");
+      }
+      const now = new Date().toISOString();
+      const item = {
+        id: newId(type), title, category, type, url: "", pdfUrl: "", imageUrl: "", duration,
+        mustRead: false, size: "", description, content: "",
+        status: "pending", uploadedBy: username, createdAt: now,
+      };
+      if (type === "book" || type === "poem") {
+        if (!content.trim() && !(file && file.size > 0)) return err("书籍/诗歌请填写正文，或上传一个文件");
+        item.content = content;
+      } else {
+        if (!file || file.size === 0) return err("音频/视频请先选一个文件");
+        if (file.size > MAX_FILE_BYTES) return err("文件超过 100MB：请先压缩或剪短，大文件请用分块上传");
+        const ext = extOf(file.name);
+        const allowed = type === "audio" ? AUDIO_EXTS : VIDEO_EXTS;
+        if (!allowed.includes(ext)) return err("不支持的文件格式：请传 " + allowed.join("、"));
+        const key = "media/" + item.id + "." + ext;
+        await env.CHENGGUANG_BUCKET.put(key, file.stream(), {
+          httpMetadata: { contentType: file.type || (type === "audio" ? "audio/mpeg" : "video/mp4") },
+        });
+        item.url = url.origin + "/file/" + key;
+        item.size = humanSize(file.size);
+        if (category === "敬拜赞美") item.content = content; // 歌的歌词存在 content 里，音频页下面显示
+        if (!duration) item.duration = "";
+      }
+      // 书籍 / 诗歌如附了文件，只收 PDF（扫描版原书），链接同时写 pdfUrl
+      if ((type === "book" || type === "poem") && file && file.size > 0) {
+        if (file.size > MAX_FILE_BYTES) return err("文件超过 100MB");
+        const ext = extOf(file.name);
+        if (ext !== "pdf") return err("书籍/诗歌的附件只收 PDF（扫描版原书）");
+        const key = "media/" + item.id + "." + ext;
+        await env.CHENGGUANG_BUCKET.put(key, file.stream(), {
+          httpMetadata: { contentType: file.type || "application/pdf" },
+        });
+        item.url = url.origin + "/file/" + key;
+        item.size = humanSize(file.size);
+        item.pdfUrl = item.url;
+      }
+      const items = await readCatalog(env);
+      items.unshift(item);
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
+    // ---- 成员分块上传（init / part / complete / abort）：和管理员的分块上传一样， ----
+    // 只是要成员登录 + 可上传标记，合并时写 pending。音频上限 500MB，视频上限 2GB。
+    // POST /api/member/upload/init {title, category, description, duration, filename, fileSize, contentType}
+    if (path === "/api/member/upload/init" && request.method === "POST") {
+      const up = await requireUploader(request, env);
+      if (up.error) return up.error;
+      const username = up.username;
+      if ((await pendingCountFor(env, username)) >= MAX_PENDING_PER_MEMBER) return err("你待审核的内容太多了（已有 50 条），等管理员先审一批再传");
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const title = String(body.title || "").trim();
+      const category = String(body.category || "").trim();
+      const filename = String(body.filename || "");
+      const fileSize = Number(body.fileSize);
+      if (!title) return err("请填写标题");
+      if (!CATEGORIES.includes(category)) return err("栏目不对");
+      const baseType = TYPE_BY_CATEGORY[category];
+      if (baseType !== "audio" && baseType !== "video") return err("这个栏目不支持分块上传");
+      const ext = extOf(filename);
+      const type = mediaTypeForExt(ext);
+      if (!type) return err("不支持的文件格式：请传音频（" + AUDIO_EXTS.join("、") + "）或视频（" + VIDEO_EXTS.join("、") + "）");
+      if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
+      if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type) + "：请先压缩或剪短");
+      if (Math.ceil(fileSize / PART_SIZE) > 10000) return err("文件太大");
+      const itemId = newId(type);
+      const key = "media/" + itemId + "." + ext;
+      const contentType = String(body.contentType || "") || (type === "audio" ? "audio/mpeg" : "video/mp4");
+      let mpu;
+      try {
+        mpu = await env.CHENGGUANG_BUCKET.createMultipartUpload(key, {
+          httpMetadata: { contentType },
+        });
+      } catch (e) { return err("创建分块上传失败：" + (e && e.message ? e.message : "R2 错误")); }
+      return json({ ok: true, uploadId: mpu.uploadId, key, itemId, partSize: PART_SIZE });
+    }
+
+    // POST /api/member/upload/part?uploadId=...&key=media%2F....ext&partNumber=N  body = 一块原始数据
+    if (path === "/api/member/upload/part" && request.method === "POST") {
+      const up = await requireUploader(request, env);
+      if (up.error) return up.error;
+      const uploadId = url.searchParams.get("uploadId") || "";
+      const key = url.searchParams.get("key") || "";
+      const partNumber = Number(url.searchParams.get("partNumber"));
+      if (!uploadId) return err("缺少 uploadId");
+      if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("key 不对");
+      if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) return err("partNumber 不对");
+      let buf;
+      try { buf = await request.arrayBuffer(); } catch (e) { return err("读取分块失败"); }
+      if (buf.byteLength === 0) return err("分块是空的");
+      if (buf.byteLength > PART_SIZE) return err("分块超过 10MB");
+      let part;
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        part = await mpu.uploadPart(partNumber, buf);
+      } catch (e) { return err("上传分块失败：" + (e && e.message ? e.message : "R2 错误")); }
+      return json({ ok: true, etag: part.etag, partNumber: part.partNumber });
+    }
+
+    // POST /api/member/upload/complete {uploadId, key, parts:[{partNumber, etag}], title, category, description, duration, fileSize}
+    if (path === "/api/member/upload/complete" && request.method === "POST") {
+      const up = await requireUploader(request, env);
+      if (up.error) return up.error;
+      const username = up.username;
+      if ((await pendingCountFor(env, username)) >= MAX_PENDING_PER_MEMBER) return err("你待审核的内容太多了（已有 50 条），等管理员先审一批再传");
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const uploadId = String(body.uploadId || "");
+      const key = String(body.key || "");
+      const parts = Array.isArray(body.parts) ? body.parts : [];
+      const title = String(body.title || "").trim();
+      const category = String(body.category || "").trim();
+      const description = String(body.description || "").trim();
+      const duration = String(body.duration || "").trim();
+      const fileSize = Number(body.fileSize);
+      if (!uploadId) return err("缺少 uploadId");
+      if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("key 不对");
+      if (!parts.length) return err("没有任何分块");
+      if (!title) return err("请填写标题");
+      if (!CATEGORIES.includes(category)) return err("栏目不对");
+      const baseType = TYPE_BY_CATEGORY[category];
+      if (baseType !== "audio" && baseType !== "video") return err("这个栏目不支持分块上传");
+      const ext = extOf(key);
+      const type = mediaTypeForExt(ext);
+      if (!type) return err("文件格式不对");
+      if (!Number.isFinite(fileSize) || fileSize <= 0) return err("文件大小不对");
+      if (fileSize > mediaLimit(type)) return err("文件超过 " + mediaLimitText(type));
+      const sorted = parts
+        .map((p) => ({ partNumber: Number(p.partNumber), etag: String(p.etag || "") }))
+        .filter((p) => Number.isInteger(p.partNumber) && p.partNumber >= 1 && p.etag)
+        .sort((a, b) => a.partNumber - b.partNumber);
+      if (!sorted.length) return err("分块信息不对");
+      let obj;
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        obj = await mpu.complete(sorted);
+      } catch (e) { return err("合并分块失败：" + (e && e.message ? e.message : "R2 错误")); }
+      const itemId = key.slice("media/".length, -("." + ext).length);
+      const item = {
+        id: itemId, title, category, type,
+        url: url.origin + "/file/" + key, pdfUrl: "", imageUrl: "", duration, mustRead: false,
+        size: humanSize(fileSize), description, content: "",
+        status: "pending", uploadedBy: username, createdAt: new Date().toISOString(),
+      };
+      const items = await readCatalog(env);
+      items.unshift(item);
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
+    // POST /api/member/upload/abort {uploadId, key}  尽力取消，未完成的 R2 分块上传 7 天后也会自动取消
+    if (path === "/api/member/upload/abort" && request.method === "POST") {
+      const up = await requireUploader(request, env);
+      if (up.error) return up.error;
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const uploadId = String(body.uploadId || "");
+      const key = String(body.key || "");
+      if (!uploadId || !/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("参数不对");
+      try {
+        const mpu = env.CHENGGUANG_BUCKET.resumeMultipartUpload(key, uploadId);
+        await mpu.abort();
+      } catch (e) { /* 已取消或已过期，忽略 */ }
+      return json({ ok: true });
     }
 
     // ---- 以下 API 全部要登录 ----
@@ -595,7 +832,7 @@ export default {
     if (path === "/api/members" && request.method === "GET") {
       const members = await readMembers(env);
       const list = Object.keys(members.users).sort().map((name) => ({
-        username: name, disabled: !!members.users[name].disabled, createdAt: members.users[name].createdAt || "", lastLoginAt: members.users[name].lastLoginAt || "",
+        username: name, disabled: !!members.users[name].disabled, canUpload: !!members.users[name].canUpload, createdAt: members.users[name].createdAt || "", lastLoginAt: members.users[name].lastLoginAt || "",
       }));
       return json({ ok: true, items: list });
     }
@@ -611,18 +848,24 @@ export default {
       if (members.users[username]) return err("这个账号已经有了");
       const salt = randomHex(16);
       const hash = await sha256Hex(salt + ":" + password);
-      members.users[username] = { salt, hash, disabled: false, createdAt: new Date().toISOString() };
+      members.users[username] = { salt, hash, disabled: false, canUpload: body.canUpload === true, createdAt: new Date().toISOString() };
       await writeMembers(env, members);
       return json({ ok: true, username });
     }
     if (path.startsWith("/api/members/") && request.method === "POST") {
       const rest = decodeURIComponent(path.slice("/api/members/".length));
-      const m = rest.match(/^(.+)\/(disable|enable)$/);
+      const m = rest.match(/^(.+)\/(disable|enable|canupload|nocanupload)$/);
       if (!m) return err("接口不对", 404);
       const username = m[1], action = m[2];
       const members = await readMembers(env);
       const u = members.users[username];
       if (!u) return err("找不到这个账号", 404);
+      // 开 / 关上传权限：不碰会话，只改标记
+      if (action === "canupload" || action === "nocanupload") {
+        u.canUpload = action === "canupload";
+        await writeMembers(env, members);
+        return json({ ok: true, username, canUpload: u.canUpload });
+      }
       u.disabled = action === "disable";
       await writeMembers(env, members);
       if (u.disabled) {
@@ -745,6 +988,17 @@ export default {
       if (typeof body.pdfUrl === "string") item.pdfUrl = body.pdfUrl;
       if (typeof body.imageUrl === "string") item.imageUrl = body.imageUrl;
       if (typeof body.mustRead === "boolean") item.mustRead = body.mustRead;
+      await writeCatalog(env, items);
+      return json({ ok: true, item });
+    }
+
+    // 审核通过：待审核改成已上架，App 下次打开就能看到（要管理员登录）
+    if (path.startsWith("/api/items/") && path.endsWith("/approve") && request.method === "POST") {
+      const id = decodeURIComponent(path.slice("/api/items/".length, -"/approve".length));
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === id);
+      if (!item) return err("找不到这条内容", 404);
+      item.status = "published";
       await writeCatalog(env, items);
       return json({ ok: true, item });
     }
@@ -946,7 +1200,7 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
   </div>
 
   <div class="card">
-    <h2>全部内容（<span id="count">0</span> 条）</h2>
+    <h2>全部内容 <span id="count"></span></h2>
     <table><thead><tr><th>标题</th><th>栏目</th><th>大小</th><th>操作</th></tr></thead>
     <tbody id="list"></tbody></table>
   </div>
@@ -959,9 +1213,10 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
 
   <div class="card">
     <h2>成员账号（<span id="memberCount">0</span> 个）</h2>
-    <p class="muted">App 登录用的账号：在这里建账号、停用账号。App 从下一版起必须登录才能看内容；停用一个账号后，那台手机立刻断开。账号名可以用中文，密码请设长一点。</p>
+    <p class="muted">App 登录用的账号：在这里建账号、停用账号。停用一个账号后，那台手机立刻断开。账号名可以用中文，密码请设长一点。勾了“允许上传”的账号能在上传页（/upload）传内容，传完是待审核，要你点通过才上架。</p>
     <label>新账号名</label><input id="memberName" placeholder="如：恩清">
     <label>密码（至少 6 位）</label><input type="password" id="memberPw" placeholder="给这个账号设一个密码">
+    <label style="display:flex;align-items:center;gap:6px;font-weight:normal"><input type="checkbox" id="memberCanUpload" style="width:auto"> 允许上传（这个账号能在上传页传内容，传完要你审核才上架）</label>
     <div style="height:10px"></div>
     <button onclick="createMember()">创建账号</button>
     <p id="memberMsg"></p>
@@ -1036,19 +1291,29 @@ async function load() {
     return;
   }
   items = d.items || [];
-  document.getElementById("count").textContent = items.length;
+  var pendingCount = 0;
+  for (var i = 0; i < items.length; i++) if ((items[i].status || "published") === "pending") pendingCount++;
+  document.getElementById("count").textContent = "（" + items.length + " 条" + (pendingCount ? "，待审核 " + pendingCount + " 条" : "") + "）";
   document.getElementById("storage").textContent = "存储占用：" + (d.totalBytesText || "0 MB") + "（" + d.fileCount + " 个文件，R2 每月免费 10GB）";
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
-    html += "<tr><td><b>" + esc(it.title) + "</b><br><span class='muted'>" + esc(it.description || "") + "</span>" + (it.pdfUrl ? "<br><span class='muted'>有讲章</span>" : "") + (it.imageUrl ? "<br><span class='muted'>有歌谱</span>" : "") + "</td>"
+    var isPending = (it.status || "published") === "pending";
+    var by = (it.uploadedBy && it.uploadedBy !== "admin") ? " · 由 " + esc(it.uploadedBy) + " 上传" : "";
+    html += "<tr><td><b>" + esc(it.title) + "</b>" + (isPending ? "<br><span style='color:#8e4a2f'>待审核" + by + "</span>" : "") + "<br><span class='muted'>" + esc(it.description || "") + "</span>" + (it.pdfUrl ? "<br><span class='muted'>有讲章</span>" : "") + (it.imageUrl ? "<br><span class='muted'>有歌谱</span>" : "") + "</td>"
       + "<td>" + esc(it.category) + "</td><td>" + esc(it.size || "-") + "</td>"
-      + "<td><button data-id='" + it.id + "' onclick='editItem(this.dataset.id)'>编辑</button> "
-      + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>删除</button></td></tr>";
+      + "<td>" + (isPending ? "<button data-id='" + it.id + "' onclick='approveItem(this.dataset.id)'>通过</button> " : "") + "<button data-id='" + it.id + "' onclick='editItem(this.dataset.id)'>编辑</button> "
+      + "<button class='danger' data-id='" + it.id + "' data-title='" + esc(it.title) + "' onclick='delItem(this.dataset.id,this.dataset.title)'>" + (isPending ? "驳回" : "删除") + "</button></td></tr>";
   }
   document.getElementById("list").innerHTML = html || "<tr><td colspan='4'>还没有内容，先上传一条试试。</td></tr>";
   loadFeedback();
   loadMembers();
+}
+async function approveItem(id) {
+  var r = await fetch("/api/items/" + encodeURIComponent(id) + "/approve", { method: "POST" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "通过失败"); return; }
+  load();
 }
 async function loadFeedback() {
   var box = document.getElementById("fbList");
@@ -1095,9 +1360,10 @@ async function loadMembers() {
   for (var i = 0; i < list.length; i++) {
     var m = list[i];
     var last = m.lastLoginAt ? fmtMemberTime(m.lastLoginAt) : "从未登录";
-    html += "<div class='fb'><div><b>" + esc(m.username) + "</b> " + (m.disabled ? "<span style='color:#8e4a2f'>已停用</span>" : "<span class='muted'>正常</span>") + "</div>"
+    html += "<div class='fb'><div><b>" + esc(m.username) + "</b> " + (m.disabled ? "<span style='color:#8e4a2f'>已停用</span>" : "<span class='muted'>正常</span>") + (m.canUpload ? " · <span>可上传</span>" : "") + "</div>"
       + "<div class='meta'>建于 " + esc((m.createdAt || "").slice(0, 10)) + " · 最后登录 " + esc(last)
       + " <button data-u='" + esc(m.username) + "' onclick='setMemberDisabled(this.dataset.u," + (m.disabled ? "false" : "true") + ")'>" + (m.disabled ? "启用" : "停用") + "</button>"
+      + " <button data-u='" + esc(m.username) + "' onclick='setMemberCanUpload(this.dataset.u," + (m.canUpload ? "false" : "true") + ")'>" + (m.canUpload ? "取消上传" : "允许上传") + "</button>"
       + " <button class='danger' data-u='" + esc(m.username) + "' onclick='delMember(this.dataset.u)'>删除</button></div></div>";
   }
   box.innerHTML = html;
@@ -1106,17 +1372,25 @@ async function createMember() {
   var name = document.getElementById("memberName").value.trim();
   var pw = document.getElementById("memberPw").value;
   if (!name || !pw) { document.getElementById("memberMsg").textContent = "请填写账号名和密码"; return; }
+  var canUpload = document.getElementById("memberCanUpload").checked;
   var r = await fetch("/api/members", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: name, password: pw }) });
+    body: JSON.stringify({ username: name, password: pw, canUpload: canUpload }) });
   var d = await r.json();
   if (!d.ok) { document.getElementById("memberMsg").textContent = d.error || "创建失败"; return; }
-  document.getElementById("memberMsg").textContent = "已创建账号 " + name + "，把账号和密码告诉对方，对方在 App 里登录就能用。";
+  document.getElementById("memberMsg").textContent = "已创建账号 " + name + "，把账号和密码告诉对方，对方在 App 里登录就能用。" + (canUpload ? "这个账号可以在上传页传内容，传完要你审核才上架。" : "");
   document.getElementById("memberName").value = "";
   document.getElementById("memberPw").value = "";
+  document.getElementById("memberCanUpload").checked = false;
   loadMembers();
 }
 async function setMemberDisabled(username, disabled) {
   var r = await fetch("/api/members/" + encodeURIComponent(username) + "/" + (disabled ? "disable" : "enable"), { method: "POST" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "操作失败"); return; }
+  loadMembers();
+}
+async function setMemberCanUpload(username, canUpload) {
+  var r = await fetch("/api/members/" + encodeURIComponent(username) + "/" + (canUpload ? "canupload" : "nocanupload"), { method: "POST" });
   var d = await r.json();
   if (!d.ok) { alert(d.error || "操作失败"); return; }
   loadMembers();
@@ -1677,6 +1951,306 @@ fetch("/api/me").then(function (r) {
     load();
   }
 });
+onCategory();
+</script>
+</body>
+</html>
+`;
+
+// ---- 成员上传页（/upload）：成员用自己的账号登录后传内容，传完待审核 ----
+// 只有管理员勾了“可上传”的账号能看到上传表单；其他人只看到“还没有上传权限”。
+// 注意：这段 HTML 也在模板字符串里，里面的 JS 不能出现反斜杠转义（\n、\. 等要写成双反斜杠），
+// 也不能出现反引号和 ${}；下面这段 JS 特意避开了这些写法，改的时候别加。
+const MEMBER_UPLOAD_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>城光 · 上传内容</title>
+<style>
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:860px;margin:0 auto;padding:20px;color:#222;background:#faf7f0}
+h1{color:#1f2a44} h2{color:#1f2a44;border-bottom:2px solid #9a7b2d;padding-bottom:6px}
+.card{background:#fff;border-radius:10px;padding:16px;margin:14px 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+label{display:block;margin:10px 0 4px;font-weight:bold}
+input,select,textarea{width:100%;box-sizing:border-box;padding:9px;border:1px solid #ccc;border-radius:6px;font-size:15px}
+textarea{min-height:120px}
+button{background:#9a7b2d;color:#fff;border:0;border-radius:6px;padding:10px 18px;font-size:15px;cursor:pointer;margin-right:8px}
+button.ghost{background:#fff;color:#333;border:1px solid #999}
+.muted{color:#888;font-size:13px}
+#msg{color:#8e4a2f;min-height:20px}
+.my{border-bottom:1px solid #eee;padding:10px 0}
+.my .meta{color:#888;font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<h1>城光 · 上传内容</h1>
+<p class="muted">用管理员给你建的成员账号登录。传完要管理员审核通过，才会在大家的 App 里出现；没通过的不会上架。</p>
+
+<div class="card" id="loginCard">
+  <h2>登录</h2>
+  <label>账号</label><input id="username" placeholder="管理员给你的账号名">
+  <label>密码</label><input type="password" id="pw" placeholder="密码">
+  <div style="height:10px"></div>
+  <button onclick="login()">登录</button>
+  <p id="msg"></p>
+</div>
+
+<div id="main" style="display:none">
+  <div class="card">
+    <span id="who"></span>
+    <button class="ghost" style="float:right" onclick="logout()">退出登录</button>
+  </div>
+
+  <div class="card" id="noPerm" style="display:none">
+    <h2>还没有上传权限</h2>
+    <p>这个账号只能看内容，还不能上传。请联系管理员，让他在管理页给你勾上“允许上传”。</p>
+  </div>
+
+  <div id="uploadBox" style="display:none">
+    <div class="card">
+      <h2>上传新内容</h2>
+      <label>标题 *</label><input id="title">
+      <label>栏目 *</label>
+      <select id="category" onchange="onCategory()">
+        <option>属灵书籍</option><option>敬拜赞美</option><option>主日信息</option><option>灵修信息</option><option>专题讲座</option>
+      </select>
+      <label>简介</label><input id="description" placeholder="一句话简介">
+      <div id="textBlock">
+        <label id="contentLabel">正文（书籍 / 诗歌）</label>
+        <textarea id="content" placeholder="把正文粘贴在这里，多段换行即可"></textarea>
+        <div id="bookBlock" style="display:none">
+          <label>原书 PDF（扫描版，可选）：没有文字层的扫描版直接传这里，App 里点“查看原书 PDF”打开看原书</label>
+          <input type="file" id="bookPdfFile" accept=".pdf">
+        </div>
+      </div>
+      <div id="worshipBlock" style="display:none">
+        <label>音频文件（歌）：MP3 等；不传就是纯文字诗歌</label>
+        <input type="file" id="songFile" accept=".mp3,.m4a,.wav,.ogg,.aac,.flac">
+      </div>
+      <div id="fileBlock" style="display:none">
+        <label>音频或视频文件 *（音频不超过 500MB，视频不超过 2GB；大文件自动分块上传）</label>
+        <input type="file" id="file">
+        <progress id="upProg" max="100" value="0" style="width:100%;display:none;margin-top:8px"></progress>
+        <div id="upProgText" class="muted" style="margin-top:4px"></div>
+        <label>时长（如 1:05:30，可不填）</label><input id="duration" placeholder="1:05:30">
+      </div>
+      <div style="height:12px"></div>
+      <button onclick="save()">提交上传</button>
+      <p id="msg2"></p>
+    </div>
+
+    <div class="card">
+      <h2>我的上传（<span id="myCount">0</span>）</h2>
+      <div id="myList">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showMsg(t, id) { document.getElementById(id || "msg").textContent = t || ""; }
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function onCategory() {
+  var c = document.getElementById("category").value;
+  var isMedia = (c === "主日信息" || c === "灵修信息" || c === "专题讲座");
+  var isWorship = (c === "敬拜赞美");
+  var isBook = (c === "属灵书籍");
+  document.getElementById("fileBlock").style.display = isMedia ? "block" : "none";
+  document.getElementById("textBlock").style.display = isMedia ? "none" : "block";
+  document.getElementById("worshipBlock").style.display = isWorship ? "block" : "none";
+  document.getElementById("bookBlock").style.display = isBook ? "block" : "none";
+  document.getElementById("contentLabel").textContent = isWorship ? "歌词（文字格式的歌谱）" : "正文（书籍 / 诗歌）";
+  if (isWorship) { document.getElementById("file").value = ""; }
+  else { document.getElementById("songFile").value = ""; }
+  if (!isBook) { document.getElementById("bookPdfFile").value = ""; }
+  if (!isMedia) { document.getElementById("file").value = ""; }
+}
+async function login() {
+  var r = await fetch("/api/member/login", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: document.getElementById("username").value.trim(), password: document.getElementById("pw").value }) });
+  var d = await r.json();
+  if (!d.ok) { showMsg(d.error || "登录失败"); return; }
+  checkLogin();
+}
+async function logout() {
+  await fetch("/api/member/logout", { method: "POST" });
+  location.reload();
+}
+async function checkLogin() {
+  var r = await fetch("/api/member/me");
+  var d = await r.json();
+  if (!d.ok) { return; }
+  document.getElementById("loginCard").style.display = "none";
+  document.getElementById("main").style.display = "block";
+  document.getElementById("who").textContent = "当前账号：" + d.username;
+  if (d.canUpload) {
+    document.getElementById("uploadBox").style.display = "block";
+    loadMy();
+  } else {
+    document.getElementById("noPerm").style.display = "block";
+  }
+}
+async function loadMy() {
+  var box = document.getElementById("myList");
+  var r = await fetch("/api/member/uploads");
+  var d = await r.json();
+  if (!d.ok) { box.textContent = "加载失败：" + (d.error || ""); return; }
+  var list = d.items || [];
+  document.getElementById("myCount").textContent = list.length;
+  if (!list.length) { box.textContent = "你还没有传过内容。"; return; }
+  var html = "";
+  for (var i = 0; i < list.length; i++) {
+    var it = list[i];
+    var st = (it.status || "published") === "pending" ? "待审核" : "已上架";
+    var when = it.createdAt ? String(it.createdAt).slice(0, 10) : "";
+    html += "<div class='my'><div><b>" + esc(it.title) + "</b> · " + esc(it.category) + "</div>"
+      + "<div class='meta'>" + st + (when ? " · " + esc(when) : "") + "</div></div>";
+  }
+  box.innerHTML = html;
+}
+async function save() {
+  var title = document.getElementById("title").value.trim();
+  if (!title) { showMsg("请填写标题", "msg2"); return; }
+  var f = document.getElementById("file").files[0];
+  var cat = document.getElementById("category").value;
+  var isMedia = (cat === "主日信息" || cat === "灵修信息" || cat === "专题讲座");
+  if (isMedia && f) { await uploadChunked(title, cat, f); return; }
+  var fd = new FormData();
+  fd.append("title", title);
+  fd.append("category", cat);
+  fd.append("description", document.getElementById("description").value);
+  fd.append("duration", document.getElementById("duration").value);
+  fd.append("content", document.getElementById("content").value);
+  if (cat === "敬拜赞美") {
+    var songF = document.getElementById("songFile").files[0];
+    if (songF) fd.append("file", songF);
+  }
+  if (cat === "属灵书籍") {
+    var bf0 = document.getElementById("bookPdfFile").files[0];
+    if (bf0) fd.append("file", bf0);
+  }
+  showMsg("正在上传，请稍等…", "msg2");
+  var r2 = await fetch("/api/member/upload", { method: "POST", body: fd });
+  var d2 = await r2.json();
+  if (!d2.ok) { showMsg(d2.error || "上传失败", "msg2"); return; }
+  showMsg("已提交，管理员审核通过后才会上架", "msg2"); resetForm(); loadMy();
+}
+function resetForm() {
+  document.getElementById("title").value = "";
+  document.getElementById("description").value = "";
+  document.getElementById("content").value = "";
+  document.getElementById("duration").value = "";
+  document.getElementById("file").value = "";
+  document.getElementById("songFile").value = "";
+  document.getElementById("bookPdfFile").value = "";
+  var prog = document.getElementById("upProg");
+  prog.style.display = "none"; prog.value = 0;
+  document.getElementById("upProgText").textContent = "";
+}
+async function uploadChunked(title, category, file) {
+  var prog = document.getElementById("upProg");
+  var progText = document.getElementById("upProgText");
+  var totalParts = 0;
+  function setProg(done, total) {
+    var pct = total ? Math.round(done / total * 100) : 0;
+    prog.style.display = "block";
+    prog.value = pct;
+    progText.textContent = "正在上传 " + pct + "%（第 " + done + "/" + total + " 块）";
+  }
+  function fail(t) {
+    prog.style.display = "none";
+    progText.textContent = "";
+    showMsg(t, "msg2");
+  }
+  prog.style.display = "block";
+  prog.value = 0;
+  progText.textContent = "正在创建上传，请稍等…";
+  var init = null;
+  for (var initTry = 1; initTry <= 3; initTry++) {
+    var initCtl = new AbortController();
+    var initTimer = setTimeout(function () { initCtl.abort(); }, 30000);
+    try {
+      var initR = await fetch("/api/member/upload/init", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title, category: category,
+          description: document.getElementById("description").value,
+          duration: document.getElementById("duration").value,
+          filename: file.name, fileSize: file.size, contentType: file.type || "" }),
+        signal: initCtl.signal });
+      clearTimeout(initTimer);
+      init = await initR.json();
+      break;
+    } catch (e) {
+      clearTimeout(initTimer);
+      if (initTry < 3) { progText.textContent = "创建上传没连上，正在重试（第 " + initTry + " 次）…"; }
+    }
+  }
+  if (!init || !init.ok) { fail((init && init.error) || "创建上传失败，请检查网络后重试"); return; }
+  totalParts = Math.ceil(file.size / init.partSize);
+  var parts = new Array(totalParts);
+  var doneCount = 0;
+  var CONCURRENCY = 4;
+  async function uploadOnePart(i) {
+    var chunk = file.slice(i * init.partSize, (i + 1) * init.partSize);
+    var lastErr = null;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      var controller = new AbortController();
+      var timer = setTimeout(function () { controller.abort(); }, 300000);
+      try {
+        var r = await fetch("/api/member/upload/part?uploadId=" + encodeURIComponent(init.uploadId)
+          + "&key=" + encodeURIComponent(init.key) + "&partNumber=" + (i + 1),
+          { method: "POST", body: chunk, signal: controller.signal });
+        clearTimeout(timer);
+        var d = await r.json();
+        if (!d.ok) throw new Error(d.error || "第 " + (i + 1) + " 块上传失败");
+        parts[i] = { partNumber: d.partNumber, etag: d.etag };
+        doneCount++;
+        setProg(doneCount, totalParts);
+        return;
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = e;
+        if (attempt < 3) { progText.textContent = "第 " + (i + 1) + " 块没传上去，正在重试（第 " + attempt + " 次）…"; }
+      }
+    }
+    throw lastErr || new Error("第 " + (i + 1) + " 块上传失败");
+  }
+  try {
+    var next = 0;
+    var workers = [];
+    for (var w = 0; w < Math.min(CONCURRENCY, totalParts); w++) {
+      workers.push((async function () {
+        while (next < totalParts) {
+          var i = next++;
+          await uploadOnePart(i);
+        }
+      })());
+    }
+    await Promise.all(workers);
+  } catch (e) {
+    try { await fetch("/api/member/upload/abort", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: init.uploadId, key: init.key }) }); } catch (e2) {}
+    fail(e.message || "上传失败"); return;
+  }
+  progText.textContent = "正在合并，请稍等…";
+  var cr = await fetch("/api/member/upload/complete", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uploadId: init.uploadId, key: init.key, parts: parts,
+      title: title, category: category,
+      description: document.getElementById("description").value,
+      duration: document.getElementById("duration").value, fileSize: file.size }) });
+  var cd = await cr.json();
+  if (!cd.ok) {
+    try { await fetch("/api/member/upload/abort", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: init.uploadId, key: init.key }) }); } catch (e3) {}
+    fail(cd.error || "合并失败"); return;
+  }
+  prog.style.display = "none";
+  progText.textContent = "";
+  showMsg("已提交，管理员审核通过后才会上架", "msg2"); resetForm(); loadMy();
+}
+checkLogin();
 onCategory();
 </script>
 </body>
