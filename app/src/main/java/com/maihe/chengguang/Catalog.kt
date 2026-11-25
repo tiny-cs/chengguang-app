@@ -127,8 +127,9 @@ fun fetchRemoteCatalog(token: String? = null): CatalogResult {
     var conn: HttpURLConnection? = null
     return try {
         conn = (URL(REMOTE_CATALOG_URL).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 10000
-            readTimeout = 15000
+            // 慢网下拉目录也容易超时：连接 30 秒，读取 60 秒。
+            connectTimeout = 30000
+            readTimeout = 60000
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")

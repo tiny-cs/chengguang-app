@@ -52,8 +52,9 @@ class MemberAuth(context: Context) {
             var conn: HttpURLConnection? = null
             try {
                 conn = (URL("$MEMBER_API_BASE/api/member/login").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15000
-                    readTimeout = 15000
+                    // 家里网速只有 1K/s 左右，15 秒不够握手+收发，登录会超时；放宽到 60 秒。
+                    connectTimeout = 60000
+                    readTimeout = 60000
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json")
                     doOutput = true
@@ -91,8 +92,8 @@ class MemberAuth(context: Context) {
             var conn: HttpURLConnection? = null
             try {
                 conn = (URL("$MEMBER_API_BASE/api/member/me").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10000
-                    readTimeout = 10000
+                    connectTimeout = 30000
+                    readTimeout = 30000
                     requestMethod = "GET"
                     setRequestProperty("Authorization", "Bearer $t")
                 }
