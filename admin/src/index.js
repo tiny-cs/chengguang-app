@@ -235,6 +235,35 @@ export default {
       });
     }
 
+    // ---- 成员拉精简目录（不带正文，只有十几 KB，慢网也能下下来） ----
+    // 列表只用标题 / 简介 / 链接；点开一本书 / 一首诗再按需取正文（/api/member/items/:id）。
+    if (path === "/catalog-lite.json" && request.method === "GET") {
+      const memberErr = await requireMember(request, env);
+      if (memberErr) return memberErr;
+      const items = await readCatalog(env);
+      const published = items
+        .filter((it) => (it.status || "published") === "published")
+        .map((it) => ({ ...it, content: "" }));
+      return new Response(JSON.stringify(published), {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "private, max-age=60",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+
+    // ---- 成员按需取单条全文（点开一本书 / 一首诗时用） ----
+    if (path.startsWith("/api/member/items/") && request.method === "GET") {
+      const memberErr = await requireMember(request, env);
+      if (memberErr) return memberErr;
+      const id = decodeURIComponent(path.slice("/api/member/items/".length));
+      const items = await readCatalog(env);
+      const item = items.find((it) => it.id === id);
+      if (!item) return err("找不到这条内容", 404);
+      return json({ ok: true, item });
+    }
+
     // ---- 成员登录后才能播放 / 下载文件（走 Worker 代理，R2 流出免费；支持断点续传） ----
     // 注意：R2 的 get() 不接受原始 Range 头字符串（会抛错、整个 Worker 报 500），
     // 必须自己解析成 {offset, length} 再传。播放器（MediaPlayer）和下载器都会发 Range 请求。

@@ -110,7 +110,50 @@ fun ReadingDetail(
     vocab: VocabStore? = null,
     onViewPdf: (String, String) -> Unit = { _, _ -> }
 ) {
-    ReaderScreen(item, bookshelf, vocab, onViewPdf)
+    // 精简目录里正文是空的：点开书 / 诗时按需取回来（只取一次，下过的存到本地目录缓存）。
+    // 内置示例自带正文，不用取；扫描版书服务器上本来就没正文，取回来也是空，直接显示“查看原书 PDF”。
+    val context = LocalContext.current
+    val memberToken = remember { MemberAuth(context) }.token
+    var content by remember(item.id) { mutableStateOf<String?>(if (item.content.isBlank()) null else item.content) }
+    var failed by remember(item.id) { mutableStateOf(false) }
+    var retryCount by remember(item.id) { mutableStateOf(0) }
+    LaunchedEffect(item.id, retryCount) {
+        if (item.content.isNotBlank()) return@LaunchedEffect
+        failed = false
+        val fetched = withContext(Dispatchers.IO) { fetchItemContent(item.id, memberToken) }
+        if (fetched == null) {
+            failed = true
+        } else {
+            content = fetched
+            if (fetched.isNotEmpty()) {
+                withContext(Dispatchers.IO) { updateCachedItemContent(context, item.id, fetched) }
+            }
+        }
+    }
+    when {
+        content != null -> ReaderScreen(item.copy(content = content!!), bookshelf, vocab, onViewPdf)
+        failed -> {
+            // 加载失败：显示重试（慢网下大书正文可能下不完，换个快点的网再点开就行）
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("正文没加载出来，可能是网太慢了", fontSize = 15.sp)
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(onClick = { retryCount++ }) { Text("再试一次") }
+            }
+        }
+        else -> {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("正在加载正文…", fontSize = 14.sp, color = Color.Gray)
+                }
+            }
+        }
+    }
 }
 
 private fun formatMs(ms: Int): String {

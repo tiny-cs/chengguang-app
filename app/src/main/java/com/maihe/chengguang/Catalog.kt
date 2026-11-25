@@ -47,11 +47,17 @@ private fun List<CatalogItem>.normalizedCategories(): List<CatalogItem> =
     map { if (it.category == "生命诗歌") it.copy(category = "敬拜赞美") else it }
 
 /**
- * 管理后台的目录地址（自定义域名，国内可访问）：
- *   https://admin.maihe334.ccwu.cc/catalog.json
+ * 管理后台的精简目录地址（自定义域名，国内可访问）：
+ *   https://admin.maihe334.ccwu.cc/catalog-lite.json
+ * 精简目录不带正文，只有十几 KB，慢网也能下下来；点开一本书 / 一首诗时
+ * 再按需取正文（见 fetchItemContent）。旧的 /catalog.json 带全文（约 4MB），
+ * 0.4K/s 的网下不下来，已不再用。
  * 为空表示后台还没部署，App 只用内置目录。
  */
-const val REMOTE_CATALOG_URL = "https://admin.maihe334.ccwu.cc/catalog.json"
+const val REMOTE_CATALOG_URL = "https://admin.maihe334.ccwu.cc/catalog-lite.json"
+
+/** 成员按需取单条全文：GET /api/member/items/<id>，返回 {ok, item}（item 含 content）。 */
+private const val MEMBER_ITEM_URL = "https://admin.maihe334.ccwu.cc/api/member/items/"
 
 fun typeChar(type: String): String = when (type) {
     "book" -> "书"
@@ -151,5 +157,53 @@ fun fetchRemoteCatalog(token: String? = null): CatalogResult {
         CatalogResult.Failed
     } finally {
         conn?.disconnect()
+    }
+}
+
+@Serializable
+private data class ItemResponse(val ok: Boolean = false, val item: CatalogItem? = null)
+
+/**
+ * 按需取一条内容的全文（点开书 / 诗时用）。精简目录里 content 是空的，
+ * 这里单独取回来。成功返回正文（可能为空字符串——扫描版书本来就没正文）；
+ * 没网、超时、401、内容不对都返回 null，调用方显示重试。
+ * 注意：大书正文几百 KB，0.4K/s 的网要下十几分钟，这里读取放宽到 5 分钟；
+ * 下不完就返回 null，用户换个快点的网再点开就行，下过的会存到本地目录缓存里。
+ */
+fun fetchItemContent(itemId: String, token: String? = null): String? {
+    var conn: HttpURLConnection? = null
+    return try {
+        conn = (URL(MEMBER_ITEM_URL + itemId).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30000
+            readTimeout = 300000
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
+        }
+        if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
+        val text = conn.inputStream.bufferedReader().use { it.readText() }
+        val resp = catalogJson.decodeFromString<ItemResponse>(text)
+        if (!resp.ok) null else resp.item?.content
+    } catch (_: IOException) {
+        null
+    } catch (e: Exception) {
+        reportError("item-content", e)
+        null
+    } finally {
+        conn?.disconnect()
+    }
+}
+
+/**
+ * 把按需取回的正文写进本地目录缓存（catalog-cache.json），下次点开同一本书
+ * 直接读本地，不用再下。缓存坏了也不影响使用，下次重拉目录就是了。
+ */
+fun updateCachedItemContent(context: Context, itemId: String, content: String) {
+    try {
+        val cached = loadCachedCatalog(context) ?: return
+        val updated = cached.map { if (it.id == itemId) it.copy(content = content) else it }
+        saveRemoteCatalog(context, updated)
+    } catch (_: Exception) {
+        // 写不进缓存也不影响阅读，这次显示的已经有了
     }
 }
