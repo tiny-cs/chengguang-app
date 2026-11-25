@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -118,7 +119,7 @@ object AudioPlayer {
     }
 
     /** 开始播一首。同一首且已准备好时不重复准备，直接恢复。 */
-    fun play(context: Context, item: CatalogItem, source: String, offline: Boolean, autoStart: Boolean = true) {
+    fun play(context: Context, item: CatalogItem, source: String, offline: Boolean, autoStart: Boolean = true, headers: Map<String, String> = emptyMap()) {
         appContext = context.applicationContext
         if (currentItem?.id == item.id && player != null && status != "准备中…" && status != "已停止") {
             if (autoStart) resume()
@@ -134,7 +135,13 @@ object AudioPlayer {
         val p = playerOrCreate()
         try {
             p.reset()
-            p.setDataSource(source)
+            // 远程链接要带登录凭证（目录和文件现在都要登录才能拿）；
+            // 本地文件不走这条，直接用路径
+            if (source.startsWith("http") && headers.isNotEmpty()) {
+                p.setDataSource(context, Uri.parse(source), headers)
+            } else {
+                p.setDataSource(source)
+            }
             p.setOnPreparedListener {
                 durationMs = it.duration
                 status = if (offline) "已就绪（离线播放）" else "已就绪"

@@ -53,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,17 +72,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 
 @Composable
 fun DetailScreen(
@@ -119,6 +121,8 @@ private fun formatMs(ms: Int): String {
 /** 音频/视频详情页共用的下载区：下载按钮 + 进度 + 取消 / 已下载 + 删除。 */
 @Composable
 fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
+    val context = LocalContext.current
+    val memberToken = remember { MemberAuth(context) }.token
     val state = downloads.state(item)
     var hint by remember { mutableStateOf("") }
 
@@ -143,7 +147,7 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
                     if (downloads.wifiOnly) Text("仅在 WiFi 下下载（可在“我的”里改）", fontSize = 13.sp, color = Color.Gray)
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(onClick = {
-                        when (val r = downloads.start(item)) {
+                        when (val r = downloads.start(item, memberToken)) {
                             DownloadStore.StartResult.Started -> hint = ""
                             DownloadStore.StartResult.NeedWifi -> hint = "已设为仅 WiFi 下载，请连接 WiFi 后再试"
                             is DownloadStore.StartResult.Failed -> hint = "下载失败：${r.message}"
@@ -177,7 +181,7 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
                     Text("下载失败，请检查网络后重试", fontSize = 14.sp, color = Color(0xFF8E4A2F))
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(onClick = {
-                        when (val r = downloads.start(item)) {
+                        when (val r = downloads.start(item, memberToken)) {
                             DownloadStore.StartResult.Started -> hint = ""
                             DownloadStore.StartResult.NeedWifi -> hint = "已设为仅 WiFi 下载，请连接 WiFi 后再试"
                             is DownloadStore.StartResult.Failed -> hint = "下载失败：${r.message}"
@@ -193,26 +197,31 @@ fun DownloadSection(item: CatalogItem, downloads: DownloadStore) {
     }
 }
 
-/** 讲章附件：PDF 在 App 里直接看（内置阅读器）；PPT/PPTX 用微软在线预览打开（要联网）。
+/** 讲章附件：PDF 在 App 里直接看（内置阅读器）；PPT/PPTX 带登录凭证下载后用系统查看器打开。
  * 下载过的不会重复下载：下载文件夹里有了就显示“已下载”，点查看直接打开那份。 */
 @Composable
 fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, _ -> }) {
     if (item.pdfUrl.isBlank()) return
     val context = LocalContext.current
+    val memberToken = remember { MemberAuth(context) }.token
+    val scope = rememberCoroutineScope()
     var hint by remember { mutableStateOf("") }
     val lower = item.pdfUrl.lowercase()
     val isPdf = lower.endsWith(".pdf")
     val isSlides = lower.endsWith(".ppt") || lower.endsWith(".pptx")
     val fileName = item.pdfUrl.substringAfterLast("/").substringBefore("?").ifEmpty { "讲章.pdf" }
-    val downloadsFile = remember(fileName) {
-        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
+    // 讲章也存 App 专属目录（和音视频下载同一个地方），退出登录时一起清掉
+    val slidesFile = remember(fileName) {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: File(context.filesDir, "downloads").also { it.mkdirs() }
+        File(dir, fileName)
     }
-    var slidesDownloaded by remember { mutableStateOf(downloadsFile.exists()) }
+    var slidesDownloaded by remember { mutableStateOf(slidesFile.exists()) }
     var waitingDownload by remember { mutableStateOf(false) }
 
     // 进页面时看一眼下载文件夹（外面下好的、以前下好的都认）
     LaunchedEffect(item.pdfUrl) {
-        slidesDownloaded = downloadsFile.exists()
+        slidesDownloaded = slidesFile.exists()
     }
     // 点了下载后每秒看一次文件出来没有，出来了就显示“已下载”，最多等 2 分钟
     LaunchedEffect(waitingDownload) {
@@ -221,7 +230,7 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
         while (tries < 120) {
             delay(1000)
             tries++
-            if (downloadsFile.exists()) {
+            if (slidesFile.exists()) {
                 slidesDownloaded = true
                 waitingDownload = false
                 hint = ""
@@ -241,7 +250,7 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
             Text(
                 when {
                     isPdf -> "PDF 讲章，在 App 里直接看，也可下载到手机离线看"
-                    isSlides -> "PPT 讲章，在线预览打开（要联网）；建议管理员转成 PDF 再传，打开更快"
+                    isSlides -> "PPT 讲章，点查看会下载后用系统查看器打开；建议管理员转成 PDF 再传，打开更快"
                     else -> "讲章附件"
                 },
                 fontSize = 14.sp
@@ -259,12 +268,15 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
                     if (isPdf) {
                         onViewPdf(item.pdfUrl, item.title + "讲章")
                     } else {
-                        hint = if (openSlides(context, item.pdfUrl, isPdf)) "" else "打不开讲章，请检查网络后重试"
+                        hint = "正在准备讲章…"
+                        scope.launch {
+                            hint = if (openPptSlides(context, item.pdfUrl, fileName, memberToken)) "" else "打不开讲章，请检查网络后重试"
+                        }
                     }
                 }) { Text("查看讲章") }
                 if (slidesDownloaded) {
                     OutlinedButton(onClick = {
-                        if (downloadsFile.delete()) {
+                        if (slidesFile.delete()) {
                             slidesDownloaded = false
                             hint = "已删除下载的讲章"
                         } else {
@@ -273,7 +285,7 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
                     }) { Text("删除下载") }
                 } else {
                     OutlinedButton(onClick = {
-                        if (downloadSlides(context, item, fileName)) {
+                        if (downloadSlides(context, item, fileName, memberToken)) {
                             waitingDownload = true
                             hint = "已开始下载，可在通知栏查看"
                         } else {
@@ -290,26 +302,70 @@ fun SlidesSection(item: CatalogItem, onViewPdf: (String, String) -> Unit = { _, 
     }
 }
 
-private fun openSlides(context: Context, url: String, isPdf: Boolean): Boolean {
-    return try {
-        val viewUrl = if (isPdf) url
-        else "https://view.officeapps.live.com/op/view.aspx?src=" + URLEncoder.encode(url, "UTF-8")
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(viewUrl)))
-        true
-    } catch (_: Exception) {
-        reportMessage("slides-open", url)
-        false
+/**
+ * PPT 讲章：微软在线预览在登录后打不开（外部浏览器没有登录凭证），
+ * 所以带凭证下到 App 专属目录，再用系统查看器打开。下过一次的直接打开。
+ */
+private suspend fun openPptSlides(context: Context, url: String, fileName: String, token: String?): Boolean {
+    return withContext(Dispatchers.IO) {
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: File(context.filesDir, "downloads").also { it.mkdirs() }
+        dir.mkdirs()
+        val file = File(dir, fileName)
+        if (!file.exists() || file.length() == 0L) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15000
+                    readTimeout = 60000
+                    requestMethod = "GET"
+                    if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
+                }
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext false
+                conn.inputStream.use { input ->
+                    FileOutputStream(file).use { out -> input.copyTo(out) }
+                }
+                if (file.length() == 0L) {
+                    file.delete()
+                    return@withContext false
+                }
+            } catch (_: Exception) {
+                file.delete()
+                return@withContext false
+            } finally {
+                conn?.disconnect()
+            }
+        }
+        try {
+            val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+            val mime = if (fileName.lowercase().endsWith(".pptx"))
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            else "application/vnd.ms-powerpoint"
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(intent)
+            true
+        } catch (_: Exception) {
+            reportMessage("slides-open", url)
+            false
+        }
     }
 }
 
-private fun downloadSlides(context: Context, item: CatalogItem, fileName: String): Boolean {
+private fun downloadSlides(context: Context, item: CatalogItem, fileName: String, token: String?): Boolean {
     return try {
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val req = DownloadManager.Request(Uri.parse(item.pdfUrl))
             .setTitle(item.title + "讲章")
             .setDescription(fileName)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
+        // 讲章文件现在要登录才能拿：下载请求也带上凭证，不然服务器会 401
+        if (!token.isNullOrBlank()) {
+            req.addRequestHeader("Authorization", "Bearer $token")
+        }
         dm.enqueue(req)
         true
     } catch (_: Exception) {
@@ -340,6 +396,7 @@ fun LyricsSection(item: CatalogItem) {
 fun SheetSection(item: CatalogItem) {
     if (item.imageUrl.isBlank()) return
     val context = LocalContext.current
+    val memberAuth = remember { MemberAuth(context) }
     var bitmap by remember(item.id, item.imageUrl) { mutableStateOf<ImageBitmap?>(null) }
     var loading by remember(item.id, item.imageUrl) { mutableStateOf(true) }
     var failed by remember(item.id, item.imageUrl) { mutableStateOf(false) }
@@ -349,7 +406,7 @@ fun SheetSection(item: CatalogItem) {
         loading = true
         failed = false
         bitmap = null
-        val bmp = loadSheetBitmap(context, item)
+        val bmp = loadSheetBitmap(context, item, memberAuth.authHeaders())
         if (bmp != null) bitmap = bmp.asImageBitmap() else failed = true
         loading = false
     }
@@ -434,7 +491,7 @@ private fun SheetFullscreen(bitmap: ImageBitmap, onClose: () -> Unit) {
 }
 
 /** 把谱图下到缓存（cacheDir/sheets/<id>.<ext>），下过一次的直接用，离线也能打开。失败返回 null（不报 Sentry）。 */
-private suspend fun loadSheetBitmap(context: Context, item: CatalogItem): Bitmap? {
+private suspend fun loadSheetBitmap(context: Context, item: CatalogItem, headers: Map<String, String> = emptyMap()): Bitmap? {
     return withContext(Dispatchers.IO) {
         val ext = item.imageUrl.substringAfterLast(".", "").substringBefore("?").lowercase()
             .takeIf { it.isNotEmpty() } ?: "jpg"
@@ -450,6 +507,8 @@ private suspend fun loadSheetBitmap(context: Context, item: CatalogItem): Bitmap
                 connectTimeout = 15000
                 readTimeout = 15000
                 requestMethod = "GET"
+                // 歌谱图片走 /file/，现在要登录才能拿
+                headers.forEach { (k, v) -> setRequestProperty(k, v) }
             }
             if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
             conn.inputStream.use { input ->
@@ -485,6 +544,7 @@ fun AudioDetail(
     // 播放地址：已下载用本地文件，否则用远程链接
     val source = downloads.playSource(item)
     val offline = downloads.isDownloaded(item)
+    val memberAuth = remember { MemberAuth(context) }
 
     // 详情页可见时：把同栏目列表交给播放器（切歌用），切歌时让页面换路由
     DisposableEffect(item.id) {
@@ -502,10 +562,10 @@ fun AudioDetail(
     LaunchedEffect(item.id, source) {
         if (AudioPlayer.currentItem?.id != item.id) {
             if (!AudioPlayer.isPlaying) {
-                AudioPlayer.play(context, item, source, offline, autoStart = offline)
+                AudioPlayer.play(context, item, source, offline, autoStart = offline, headers = memberAuth.authHeaders())
             }
         } else if (AudioPlayer.currentSource != source) {
-            AudioPlayer.play(context, item, source, offline, autoStart = AudioPlayer.isPlaying)
+            AudioPlayer.play(context, item, source, offline, autoStart = AudioPlayer.isPlaying, headers = memberAuth.authHeaders())
         }
     }
 
@@ -635,6 +695,7 @@ fun VideoDetail(
     val localView = LocalView.current
     val source = downloads.playSource(item)
     val offline = downloads.isDownloaded(item)
+    val memberAuth = remember { MemberAuth(context) }
     // 全屏状态：进全屏转横屏、藏系统栏、藏标题栏；退出回竖屏、恢复系统栏。
     var isFullscreen by remember(item.id) { mutableStateOf(false) }
     var dragMs by remember { mutableStateOf<Int?>(null) }
@@ -753,10 +814,10 @@ fun VideoDetail(
     LaunchedEffect(item.id, source) {
         if (VideoPlayer.currentItem?.id != item.id) {
             if (!VideoPlayer.isPlaying && !AudioPlayer.isPlaying) {
-                VideoPlayer.play(context, item, source, offline, autoStart = offline)
+                VideoPlayer.play(context, item, source, offline, autoStart = offline, headers = memberAuth.authHeaders())
             }
         } else if (VideoPlayer.currentSource != source) {
-            VideoPlayer.play(context, item, source, offline, autoStart = VideoPlayer.isPlaying)
+            VideoPlayer.play(context, item, source, offline, autoStart = VideoPlayer.isPlaying, headers = memberAuth.authHeaders())
         }
     }
 

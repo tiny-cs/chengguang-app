@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.view.SurfaceHolder
 import androidx.compose.runtime.getValue
@@ -198,7 +199,7 @@ object VideoPlayer {
     }
 
     /** 开始播一个视频。同一条且已准备好时不重复准备，直接恢复。 */
-    fun play(context: Context, item: CatalogItem, source: String, offline: Boolean, autoStart: Boolean = true) {
+    fun play(context: Context, item: CatalogItem, source: String, offline: Boolean, autoStart: Boolean = true, headers: Map<String, String> = emptyMap()) {
         appContext = context.applicationContext
         ensureScreenReceiver(context)
         pausedByScreenOff = false
@@ -218,7 +219,13 @@ object VideoPlayer {
         val p = playerOrCreate()
         try {
             p.reset()
-            p.setDataSource(source)
+            // 远程链接要带登录凭证（目录和文件现在都要登录才能拿）；
+            // 本地文件不走这条，直接用路径
+            if (source.startsWith("http") && headers.isNotEmpty()) {
+                p.setDataSource(context, Uri.parse(source), headers)
+            } else {
+                p.setDataSource(source)
+            }
             // 画面已经在就接上；还没接上（在主界面切歌）就先不接，等回来再接
             surfaceHolder?.let { holder ->
                 try { p.setDisplay(holder) } catch (_: Exception) {}

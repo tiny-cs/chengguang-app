@@ -173,7 +173,7 @@ class DownloadStore(context: Context) {
         data class Failed(val message: String) : StartResult
     }
 
-    fun start(item: CatalogItem): StartResult {
+    fun start(item: CatalogItem, token: String? = null): StartResult {
         if (item.url.isEmpty()) return StartResult.Failed("这条内容没有可下载的文件")
         if (isDownloaded(item)) return StartResult.Started
         if (wifiOnly && !isWifiConnected()) return StartResult.NeedWifi
@@ -187,6 +187,10 @@ class DownloadStore(context: Context) {
                 .setDestinationInExternalFilesDir(
                     appContext, Environment.DIRECTORY_DOWNLOADS, fileName(item)
                 )
+            // 目录和文件现在要登录才能拿：下载请求也带上凭证，不然服务器会 401
+            if (!token.isNullOrBlank()) {
+                request.addRequestHeader("Authorization", "Bearer $token")
+            }
             if (wifiOnly) {
                 request.setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI)
             } else {
@@ -219,6 +223,25 @@ class DownloadStore(context: Context) {
         downloadId(item)?.let { dm.remove(it) }
         clearDownloadId(item)
         localFile(item).delete()
+        refresh()
+    }
+
+    /**
+     * 退出登录 / 账号失效时用：删掉所有下载任务和文件（音频、视频、讲章都在
+     * 同一个 App 专属目录里），清掉下载记录。注意只删 dl_id_ 开头的键，
+     * wifi_only 这些设置要留着。
+     */
+    fun clearAllDownloads() {
+        val edit = prefs.edit()
+        prefs.all.keys.filter { it.startsWith("dl_id_") }.forEach { key ->
+            val id = prefs.getLong(key, -1L)
+            if (id >= 0) {
+                try { dm.remove(id) } catch (_: Exception) { }
+            }
+            edit.remove(key)
+        }
+        edit.apply()
+        downloadDir().listFiles()?.forEach { it.delete() }
         refresh()
     }
 

@@ -107,13 +107,23 @@ fun loadCachedCatalog(context: Context): List<CatalogItem>? {
     }
 }
 
+/** 拉远程目录的结果：成功、账号失效（401）、其它失败（没网、超时、内容不对）。 */
+sealed interface CatalogResult {
+    data class Ok(val items: List<CatalogItem>) : CatalogResult
+    /** token 失效或账号被停用：调用方要回到登录页并清掉下载 */
+    data object Unauthorized : CatalogResult
+    /** 没网、超时、内容不对：调用方继续用缓存或内置目录 */
+    data object Failed : CatalogResult
+}
+
 /**
  * 从管理后台拉远程目录。成功返回已过滤的列表（只留 published）；
- * 地址为空、没网、超时、内容不对都返回 null，调用方继续用内置目录。
+ * 地址为空、没网、超时、内容不对都返回 Failed，调用方继续用内置目录；
+ * 401 返回 Unauthorized（token 失效或账号被停用）。
  * 注意：这里只传回“拉取失败”这个事实，不把 URL 发给任何地方。
  */
-fun fetchRemoteCatalog(): List<CatalogItem>? {
-    if (REMOTE_CATALOG_URL.isBlank()) return null
+fun fetchRemoteCatalog(token: String? = null): CatalogResult {
+    if (REMOTE_CATALOG_URL.isBlank()) return CatalogResult.Failed
     var conn: HttpURLConnection? = null
     return try {
         conn = (URL(REMOTE_CATALOG_URL).openConnection() as HttpURLConnection).apply {
@@ -121,17 +131,23 @@ fun fetchRemoteCatalog(): List<CatalogItem>? {
             readTimeout = 15000
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
         }
-        if (conn.responseCode != HttpURLConnection.HTTP_OK) return null
-        val text = conn.inputStream.bufferedReader().use { it.readText() }
-        val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
-        items.filter { it.status.isBlank() || it.status == "published" }.normalizedCategories()
+        when (conn.responseCode) {
+            HttpURLConnection.HTTP_OK -> {
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                val items = catalogJson.decodeFromString<List<CatalogItem>>(text)
+                CatalogResult.Ok(items.filter { it.status.isBlank() || it.status == "published" }.normalizedCategories())
+            }
+            HttpURLConnection.HTTP_UNAUTHORIZED -> CatalogResult.Unauthorized
+            else -> CatalogResult.Failed
+        }
     } catch (_: IOException) {
         // 没网、超时、连接被关：慢网络下的正常情况，静默用内置目录，不上报 Sentry
-        null
+        CatalogResult.Failed
     } catch (e: Exception) {
         reportError("catalog", e)
-        null
+        CatalogResult.Failed
     } finally {
         conn?.disconnect()
     }

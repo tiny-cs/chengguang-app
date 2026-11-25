@@ -33,6 +33,9 @@ const MAX_SHEET_BYTES = 20 * 1024 * 1024; // 谱图单次上传上限 20MB
 const SHEET_CONTENT_TYPE = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
 const FEEDBACK_KEY = "feedback.json"; // 读者建议：App“给开发者建议”提交的，只管理员能看
 const MAX_FEEDBACK_CHARS = 2000;
+const MEMBERS_KEY = "members.json"; // 成员账号：{ users: { 账号名: { salt, hash, disabled, createdAt } } }，密码只存加盐 SHA-256，不存明文
+const SESSIONS_KEY = "sessions.json"; // 成员会话：{ tokens: { token: { username, expiresAt } } }
+const MEMBER_SESSION_DAYS = 30; // 成员登录一次管 30 天
 
 // 首次部署时自动写入的示例目录（与 App 内置 catalog.json 同源，见 build 时注入）。
 const SEED_CATALOG = [{"category": "属灵书籍", "content": "认识基督，不是一套道理，乃是一个人。\n\n我们越认识祂，就越认识自己；越亲近祂，就越有力量走前面的路。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "认识基督，是属灵生命的起头，也是每天的功课。", "duration": "", "id": "b1", "size": "", "title": "认识基督", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "真实的属灵，不在乎人看得见的热心，乃在乎里面有没有基督的成分。\n\n生命长大是一天一天的事，急不得，也假不得。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "属灵的事不在外面，乃在里面；不在知识，乃在生命。", "duration": "", "id": "b2", "size": "", "title": "属灵的实际", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "环境来的时候，人总想问为什么；等走过去了，才看见那是恩典的手。\n\n经历不是白白得来的，是在顺服里一点一点积攒的。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "每一处环境，都是量给我们的功课。", "duration": "", "id": "b3", "size": "", "title": "生命的经历", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "属灵书籍", "content": "祷告的起头很简单：停下来，把心里的话告诉主。\n\n天天这样操练，里面就渐渐有了安息和亮光。\n\n这是一段示例文字，正式内容由管理员上传替换。", "description": "祷告不是仪式，乃是与主交通的生活。", "duration": "", "id": "b4", "size": "", "title": "祷告的操练", "type": "book", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "敬拜赞美", "content": "清晨的光照进窗来，\n我的心向你歌唱；\n荣耀、尊贵、权柄、能力，\n都归于坐宝座的羔羊。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "清晨醒来，第一句就是赞美。", "duration": "", "id": "p1", "size": "", "title": "荣耀归于主", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "敬拜赞美", "content": "长阔高深的爱，\n把我这个人全然包围；\n在软弱中祂扶持，\n在黑夜里祂是光。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "祂的爱，量不尽，也说不完。", "duration": "", "id": "p2", "size": "", "title": "主爱长阔高深", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "敬拜赞美", "content": "羔羊无论往哪里去，\n我都愿意跟随；\n路虽窄，心却安，\n因为祂与我同行。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "无论往哪里去，都跟随羔羊的脚踪。", "duration": "", "id": "p3", "size": "", "title": "跟随羔羊", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}, {"category": "敬拜赞美", "content": "一座城立在山上，\n光从城里透出来；\n愿这光照亮四方，\n叫人看见就归荣耀给父。\n\n（示例诗歌，正式内容由管理员上传替换。）", "description": "城造在山上，是不能隐藏的。", "duration": "", "id": "p4", "size": "", "title": "城上的光", "type": "poem", "url": "", "status": "published", "uploadedBy": "admin", "createdAt": "2026-11-23T00:00:00.000Z"}];
@@ -121,6 +124,68 @@ async function writeFeedback(env, list) {
   });
 }
 
+// ---- 成员账号（App 登录用）：账号密码存在 R2，密码只存加盐 SHA-256，不存明文 ----
+// 会话存在 R2 的 sessions.json；每次查目录 / 取文件都要先验会话，停用的账号立刻断开。
+function hexBuf(bytes) { return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+async function sha256Hex(text) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return hexBuf(hash);
+}
+function randomHex(nBytes) {
+  const arr = new Uint8Array(nBytes);
+  crypto.getRandomValues(arr);
+  return hexBuf(arr);
+}
+async function readMembers(env) {
+  const obj = await env.CHENGGUANG_BUCKET.get(MEMBERS_KEY);
+  if (!obj) return { users: {} };
+  try {
+    const d = JSON.parse(await obj.text());
+    return d && typeof d.users === "object" && d.users ? d : { users: {} };
+  } catch (e) { return { users: {} }; }
+}
+async function writeMembers(env, data) {
+  await env.CHENGGUANG_BUCKET.put(MEMBERS_KEY, JSON.stringify(data, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+}
+async function readSessions(env) {
+  const obj = await env.CHENGGUANG_BUCKET.get(SESSIONS_KEY);
+  if (!obj) return { tokens: {} };
+  try {
+    const d = JSON.parse(await obj.text());
+    return d && typeof d.tokens === "object" && d.tokens ? d : { tokens: {} };
+  } catch (e) { return { tokens: {} }; }
+}
+async function writeSessions(env, data) {
+  await env.CHENGGUANG_BUCKET.put(SESSIONS_KEY, JSON.stringify(data, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+}
+// 成员凭证：优先认 Authorization: Bearer，其次认 cg_member Cookie（浏览器里登录用）。
+function memberTokenFrom(request) {
+  const auth = request.headers.get("Authorization") || "";
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  return cookieValue(request, "cg_member") || "";
+}
+// 验成员：会话存在、没过期、账号没被停用，才算登录。返回账号名，验不过返回 null。
+async function validMember(request, env) {
+  const token = memberTokenFrom(request);
+  if (!token) return null;
+  const sessions = await readSessions(env);
+  const s = sessions.tokens[token];
+  if (!s || !s.username || !s.expiresAt || s.expiresAt < Date.now()) return null;
+  const members = await readMembers(env);
+  const u = members.users[s.username];
+  if (!u || u.disabled) return null;
+  return s.username;
+}
+async function requireMember(request, env) {
+  const username = await validMember(request, env);
+  if (!username) return err("请先登录", 401);
+  return null;
+}
+
 // ---- 鉴权：单管理员密码，存在 Secret ADMIN_PASSWORD ----
 async function adminToken(env) {
   const pw = env.ADMIN_PASSWORD || "";
@@ -154,23 +219,28 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // ---- 公开：App 拉目录（只给 published 的） ----
+    // ---- 成员登录后才能拉目录（只给 published 的） ----
+    // 注意：这里不能再用 public 缓存——边缘缓存一旦把 200 存下来，没登录的人也能直接拿到目录。
     if (path === "/catalog.json" && request.method === "GET") {
+      const memberErr = await requireMember(request, env);
+      if (memberErr) return memberErr;
       const items = await readCatalog(env);
       const published = items.filter((it) => (it.status || "published") === "published");
       return new Response(JSON.stringify(published), {
         headers: {
           "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "public, max-age=60",
+          "Cache-Control": "private, max-age=60",
           "Access-Control-Allow-Origin": "*",
         },
       });
     }
 
-    // ---- 公开：播放 / 下载文件（走 Worker 代理，R2 流出免费；支持断点续传） ----
+    // ---- 成员登录后才能播放 / 下载文件（走 Worker 代理，R2 流出免费；支持断点续传） ----
     // 注意：R2 的 get() 不接受原始 Range 头字符串（会抛错、整个 Worker 报 500），
     // 必须自己解析成 {offset, length} 再传。播放器（MediaPlayer）和下载器都会发 Range 请求。
     if (path.startsWith("/file/") && (request.method === "GET" || request.method === "HEAD")) {
+      const memberErr = await requireMember(request, env);
+      if (memberErr) return memberErr;
       const key = decodeURIComponent(path.slice("/file/".length));
       if (!/^media\/[A-Za-z0-9._-]+$/.test(key)) return err("文件不存在", 404);
       const head = await env.CHENGGUANG_BUCKET.head(key);
@@ -186,7 +256,7 @@ export default {
       const headers = new Headers();
       head.writeHttpMetadata(headers);
       headers.set("etag", head.httpEtag);
-      headers.set("Cache-Control", "public, max-age=31536000, immutable");
+      headers.set("Cache-Control", "private, max-age=31536000, immutable");
       headers.set("Access-Control-Allow-Origin", "*");
       headers.set("Accept-Ranges", "bytes");
       if (request.method === "HEAD") {
@@ -256,6 +326,50 @@ export default {
       const authErr = await requireAuth(request, env);
       if (authErr) return authErr;
       return json({ ok: true });
+    }
+
+    // ---- 成员登录（App 用）：账号由管理员在后台建，密码加盐存 R2；登录一次管 30 天 ----
+    // 返回的 token App 存在本机，每次拉目录 / 取文件都带 Authorization: Bearer 发过去；
+    // Cookie 是给浏览器里登录用的，App 不走 Cookie。
+    if (path === "/api/member/login" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { /* ignore */ }
+      const username = String(body.username || "").trim();
+      const password = String(body.password || "");
+      if (!username || !password) return err("请填写账号和密码", 400);
+      const members = await readMembers(env);
+      const u = members.users[username];
+      if (!u || u.disabled) return err("账号或密码不对", 401);
+      const hash = await sha256Hex(u.salt + ":" + password);
+      if (hash !== u.hash) return err("账号或密码不对", 401);
+      const token = randomHex(32);
+      const sessions = await readSessions(env);
+      const now = Date.now();
+      for (const t of Object.keys(sessions.tokens)) {
+        if (!sessions.tokens[t].expiresAt || sessions.tokens[t].expiresAt < now) delete sessions.tokens[t];
+      }
+      sessions.tokens[token] = { username, expiresAt: now + MEMBER_SESSION_DAYS * 24 * 3600 * 1000 };
+      await writeSessions(env, sessions);
+      return json({ ok: true, username, token }, 200, {
+        "Set-Cookie": "cg_member=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + (MEMBER_SESSION_DAYS * 24 * 3600),
+        "Access-Control-Allow-Origin": "*",
+      });
+    }
+    if (path === "/api/member/logout" && request.method === "POST") {
+      const token = memberTokenFrom(request);
+      if (token) {
+        const sessions = await readSessions(env);
+        if (sessions.tokens[token]) { delete sessions.tokens[token]; await writeSessions(env, sessions); }
+      }
+      return json({ ok: true }, 200, {
+        "Set-Cookie": "cg_member=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+        "Access-Control-Allow-Origin": "*",
+      });
+    }
+    if (path === "/api/member/me" && request.method === "GET") {
+      const username = await validMember(request, env);
+      if (!username) return err("请先登录", 401);
+      return json({ ok: true, username }, 200, { "Access-Control-Allow-Origin": "*" });
     }
 
     // ---- 以下 API 全部要登录 ----
@@ -431,6 +545,67 @@ export default {
       if (idx < 0) return err("找不到这条建议", 404);
       list.splice(idx, 1);
       await writeFeedback(env, list);
+      return json({ ok: true });
+    }
+
+    // ---- 成员账号管理（要管理员登录）：建账号 / 停用 / 启用 / 删除 / 列表 ----
+    // 停用、删除账号时，把这个账号名下的会话也清掉，正在用的手机立刻断开。
+    if (path === "/api/members" && request.method === "GET") {
+      const members = await readMembers(env);
+      const list = Object.keys(members.users).sort().map((name) => ({
+        username: name, disabled: !!members.users[name].disabled, createdAt: members.users[name].createdAt || "",
+      }));
+      return json({ ok: true, items: list });
+    }
+    if (path === "/api/members" && request.method === "POST") {
+      let body = {};
+      try { body = await request.json(); } catch (e) { return err("请求不对"); }
+      const username = String(body.username || "").trim();
+      const password = String(body.password || "");
+      if (!username || username.length > 30) return err("账号名不对（1-30 字）");
+      if (!/^[A-Za-z0-9_\u4e00-\u9fa5.-]+$/.test(username)) return err("账号名只能用字母、数字、中文、下划线、点、横杠");
+      if (password.length < 6) return err("密码至少 6 位，请设长一点");
+      const members = await readMembers(env);
+      if (members.users[username]) return err("这个账号已经有了");
+      const salt = randomHex(16);
+      const hash = await sha256Hex(salt + ":" + password);
+      members.users[username] = { salt, hash, disabled: false, createdAt: new Date().toISOString() };
+      await writeMembers(env, members);
+      return json({ ok: true, username });
+    }
+    if (path.startsWith("/api/members/") && request.method === "POST") {
+      const rest = decodeURIComponent(path.slice("/api/members/".length));
+      const m = rest.match(/^(.+)\/(disable|enable)$/);
+      if (!m) return err("接口不对", 404);
+      const username = m[1], action = m[2];
+      const members = await readMembers(env);
+      const u = members.users[username];
+      if (!u) return err("找不到这个账号", 404);
+      u.disabled = action === "disable";
+      await writeMembers(env, members);
+      if (u.disabled) {
+        const sessions = await readSessions(env);
+        let changed = false;
+        for (const t of Object.keys(sessions.tokens)) {
+          if (sessions.tokens[t].username === username) { delete sessions.tokens[t]; changed = true; }
+        }
+        if (changed) await writeSessions(env, sessions);
+      }
+      return json({ ok: true, username, disabled: u.disabled });
+    }
+    if (path.startsWith("/api/members/") && request.method === "DELETE") {
+      const username = decodeURIComponent(path.slice("/api/members/".length));
+      if (!username || username.includes("/")) return err("账号名不对");
+      const members = await readMembers(env);
+      if (!members.users[username]) return err("找不到这个账号", 404);
+      delete members.users[username];
+      await writeMembers(env, members);
+      const sessions = await readSessions(env);
+      let changed = false;
+      for (const t of Object.keys(sessions.tokens)) {
+        if (sessions.tokens[t].username === username) { delete sessions.tokens[t]; changed = true; }
+      }
+      if (changed) await writeSessions(env, sessions);
       return json({ ok: true });
     }
 
@@ -739,6 +914,17 @@ td,th{border-bottom:1px solid #eee;padding:8px 4px;text-align:left;vertical-alig
     <p class="muted">App“我的”页里读者提交的建议，不用登录也能发。处理完点删除。</p>
     <div id="fbList">加载中…</div>
   </div>
+
+  <div class="card">
+    <h2>成员账号（<span id="memberCount">0</span> 个）</h2>
+    <p class="muted">App 登录用的账号：在这里建账号、停用账号。App 从下一版起必须登录才能看内容；停用一个账号后，那台手机立刻断开。账号名可以用中文，密码请设长一点。</p>
+    <label>新账号名</label><input id="memberName" placeholder="如：恩清">
+    <label>密码（至少 6 位）</label><input type="password" id="memberPw" placeholder="给这个账号设一个密码">
+    <div style="height:10px"></div>
+    <button onclick="createMember()">创建账号</button>
+    <p id="memberMsg"></p>
+    <div id="memberList">加载中…</div>
+  </div>
 </div>
 
 <script>
@@ -820,6 +1006,7 @@ async function load() {
   }
   document.getElementById("list").innerHTML = html || "<tr><td colspan='4'>还没有内容，先上传一条试试。</td></tr>";
   loadFeedback();
+  loadMembers();
 }
 async function loadFeedback() {
   var box = document.getElementById("fbList");
@@ -845,6 +1032,51 @@ async function delFeedback(id) {
   var d = await r.json();
   if (!d.ok) { alert(d.error || "删除失败"); return; }
   loadFeedback();
+}
+// 成员账号：建账号、停用/启用、删除、列表（都要管理员登录）
+async function loadMembers() {
+  var box = document.getElementById("memberList");
+  var r = await fetch("/api/members");
+  var d = await r.json();
+  if (!d.ok) { box.textContent = "加载失败：" + (d.error || ""); return; }
+  var list = d.items || [];
+  document.getElementById("memberCount").textContent = list.length;
+  if (!list.length) { box.textContent = "还没有成员账号，先建一个。"; return; }
+  var html = "";
+  for (var i = 0; i < list.length; i++) {
+    var m = list[i];
+    html += "<div class='fb'><div><b>" + esc(m.username) + "</b> " + (m.disabled ? "<span style='color:#8e4a2f'>已停用</span>" : "<span class='muted'>正常</span>") + "</div>"
+      + "<div class='meta'>" + esc((m.createdAt || "").slice(0, 10))
+      + " <button data-u='" + esc(m.username) + "' onclick='setMemberDisabled(this.dataset.u," + (m.disabled ? "false" : "true") + ")'>" + (m.disabled ? "启用" : "停用") + "</button>"
+      + " <button class='danger' data-u='" + esc(m.username) + "' onclick='delMember(this.dataset.u)'>删除</button></div></div>";
+  }
+  box.innerHTML = html;
+}
+async function createMember() {
+  var name = document.getElementById("memberName").value.trim();
+  var pw = document.getElementById("memberPw").value;
+  if (!name || !pw) { document.getElementById("memberMsg").textContent = "请填写账号名和密码"; return; }
+  var r = await fetch("/api/members", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: name, password: pw }) });
+  var d = await r.json();
+  if (!d.ok) { document.getElementById("memberMsg").textContent = d.error || "创建失败"; return; }
+  document.getElementById("memberMsg").textContent = "已创建账号 " + name + "，把账号和密码告诉对方，对方在 App 里登录就能用。";
+  document.getElementById("memberName").value = "";
+  document.getElementById("memberPw").value = "";
+  loadMembers();
+}
+async function setMemberDisabled(username, disabled) {
+  var r = await fetch("/api/members/" + encodeURIComponent(username) + "/" + (disabled ? "disable" : "enable"), { method: "POST" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "操作失败"); return; }
+  loadMembers();
+}
+async function delMember(username) {
+  if (!confirm("确定删除账号「" + username + "」吗？这个账号会立刻不能登录。")) return;
+  var r = await fetch("/api/members/" + encodeURIComponent(username), { method: "DELETE" });
+  var d = await r.json();
+  if (!d.ok) { alert(d.error || "删除失败"); return; }
+  loadMembers();
 }
 // 书籍/诗歌从文件导入正文：TXT 按 UTF-8 / GB18030 自动识别编码读，PDF 用 pdf.js 按页提文字，
 // Word .docx 用 mammoth 提纯文本，EPUB 用 JSZip 解包、按 spine 顺序提各章正文。

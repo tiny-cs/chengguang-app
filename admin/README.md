@@ -10,8 +10,8 @@ admin/
   README.md         本文件
 ```
 
-一个 Worker 干三件事：① 托管管理页（`/`）；② 给 App 提供目录（`/catalog.json`）和文件播放（`/file/...`）；
-③ 管理接口（`/api/*`，要登录）。
+一个 Worker 干三件事：① 托管管理页（`/`）；② 给 App 提供目录（`/catalog.json`）和文件播放（`/file/...`），
+都要成员登录（v1.15.0 起，旧版 App 部署后看不到内容）；③ 管理接口（`/api/*`，要登录）。
 
 ## 数据放哪里
 
@@ -21,14 +21,26 @@ admin/
   另外每条还有 `mustRead`（布尔，默认 false）：勾上后 App 里标题显示红色；老条目没有这个字段时按 false 处理。
   App 读的时候只认 published 的；Worker 返回 `/catalog.json` 时也只给 published 的。
 - **密码**：Worker Secret `ADMIN_PASSWORD`，不在代码、不在仓库里。
+- **成员账号**（v1.15.0 起）：R2 里的 `members.json`（`{ users: { 账号名: { salt, hash, disabled, createdAt } } }`），
+  密码只存加盐 SHA-256，不存明文；会话在 `sessions.json`（`{ tokens: { token: { username, expiresAt } } }`），
+  登录一次管 30 天。管理页“成员账号”里建账号、停用、启用、删除。停用会立刻删掉该账号的全部会话，
+  App 下次打开（或拉目录）时返回 401，自动回到登录页并清掉下载。
 
 ## 接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/` | 管理页（中文） |
-| GET | `/catalog.json` | App 拉目录（公开，只含 published） |
-| GET | `/file/media/<id>.<ext>` | 播放 / 下载文件（公开走 Worker 代理，支持断点续传 Range） |
+| GET | `/catalog.json` | App 拉目录（要成员登录，只含 published；缓存头是 `private`，不让边缘缓存给没登录的人） |
+| GET | `/file/media/<id>.<ext>` | 播放 / 下载文件（要成员登录，走 Worker 代理，支持断点续传 Range） |
+| POST | `/api/member/login` | 成员登录（公开）：`{username, password}` → `{ok, username, token}` + 写 HttpOnly Cookie `cg_member`（30 天）；账号或密码不对、账号被停用都返回 401，错误文案不区分是哪种 |
+| POST | `/api/member/logout` | 成员退出（公开，带 token）：删会话 + 清 Cookie |
+| GET | `/api/member/me` | 成员是否已登录（要成员登录） |
+| GET | `/api/members` | 成员列表（要管理员登录）：只返回账号名、是否停用、创建时间，不返回密码散列 |
+| POST | `/api/members` | 建成员账号（要管理员登录）：`{username, password}`，账号名 1–30 字（字母、数字、下划线、中文、点、横杠），密码 ≥6 位 |
+| POST | `/api/members/:name/disable` | 停用成员（要管理员登录）：同时删掉该账号的全部会话，App 立刻断开 |
+| POST | `/api/members/:name/enable` | 启用成员（要管理员登录） |
+| DELETE | `/api/members/:name` | 删成员账号（要管理员登录）：同时删掉该账号的全部会话 |
 | POST | `/api/login` | `{password}` → 写 HttpOnly Cookie `cg_admin`（30 天） |
 | POST | `/api/logout` | 清 Cookie |
 | GET | `/api/me` | 是否已登录 |
@@ -87,9 +99,23 @@ admin/
 2. 管理页加一栏“待审核”，管理员点“通过”把 `status` 改成 `published`，点“不通过”删除；
 3. App 和 `/catalog.json` 本来就只返回 published，不用改。
 
+## 上线顺序（v1.15.0，成员登录）
+
+**先部署 Worker，再装新 App。** Worker 部署后，旧版 App（1.14.2 及以前）拉目录和播文件都会返回 401，
+只显示内置的 8 条示例内容——这是预期的，不是故障。顺序：
+
+1. 在管理页“成员账号”里先给自己建一个账号（部署前建不了，接口在新版 Worker 里）；
+   部署完立刻建好，再装新 App 登录。部署和装 App 之间别隔太久。
+2. 部署 Worker（iPad 上按 DEPLOY.md 的步骤粘贴 `admin/src/index.js`）。
+3. 装新 App（先卸载旧版，签名不一样），用成员账号登录。
+4. 登录后检查：目录是最新条数、点一条音频能播、点“下载到手机”能下、讲章 PDF 能打开。
+
 ## 安全说明
 
 - 管理接口只认 Cookie（HttpOnly，30 天），密码本身不经过前端存储。
+- 成员登录：App 每次拉目录、播音频/视频、下载、看讲章、看歌谱都带 `Authorization: Bearer <token>`；
+  没登录或账号被停用时服务器返回 401，App 回到登录页并清掉下载和缓存。
+  缓存的目录和已下载的文件只在 App 专属目录里，退出登录时一起清掉；书架、笔记、生词本是本机学习记录，不动。
 - 文件播放走 Worker 代理，不暴露 R2 的公开地址和桶名以外的信息。
 - `/file/` 支持 Range（播放器和下载器都靠它断点续传）和 HEAD：Worker 自己把 Range 头解析成
   `{offset, length}` 再传给 R2（直接传原始 Range 字符串会抛错、整个请求报 500），越界返回 416。

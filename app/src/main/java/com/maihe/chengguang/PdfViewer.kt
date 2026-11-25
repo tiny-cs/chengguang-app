@@ -178,22 +178,23 @@ private suspend fun downloadPdf(context: android.content.Context, url: String, f
         val dir = File(context.cacheDir, "slides").apply { mkdirs() }
         val file = File(dir, "slides-" + url.hashCode() + ".pdf")
         if (!forceRedownload && file.exists() && file.length() > 0) return@withContext file
-        // 已经用“下载讲章”存到手机下载文件夹的，直接打开那份，不用再下一遍
+        // 已经用“下载讲章”存到 App 专属目录的，直接打开那份，不用再下一遍
         val fileName = url.substringAfterLast("/").substringBefore("?").ifEmpty { "讲章.pdf" }
-        val downloaded = File(
-            android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_DOWNLOADS
-            ), fileName
-        )
+        val appDownloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+            ?: File(context.filesDir, "downloads")
+        val downloaded = File(appDownloadsDir, fileName)
         if (!forceRedownload && downloaded.exists() && downloaded.length() > 0) {
             return@withContext downloaded
         }
+        val token = MemberAuth(context).token
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15000
                 readTimeout = 15000
                 requestMethod = "GET"
+                // 讲章文件走 /file/，现在要登录才能拿
+                if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
             }
             if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
             conn.inputStream.use { input ->

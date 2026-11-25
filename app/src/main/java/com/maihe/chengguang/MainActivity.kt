@@ -1,6 +1,7 @@
 package com.maihe.chengguang
 
 import android.Manifest
+import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private val Navy = Color(0xFF1F2A44)
 private val Gold = Color(0xFF9A7B2D)
@@ -95,6 +98,28 @@ sealed interface Route {
     data class Pdf(val url: String, val title: String) : Route
     data object Bookshelf : Route
     data object Vocab : Route
+}
+
+/** 登录状态：Checking 打开时正在校验；LoggedOut 显示登录页；LoggedIn 进内容。 */
+enum class LoginState { Checking, LoggedIn, LoggedOut }
+
+/**
+ * 退出登录 / 账号失效时清掉本机数据：停掉播放、清掉下载（音频、视频、讲章
+ * 都在 App 专属目录里）、删掉目录缓存和歌谱/讲章缓存、清掉登录凭证。
+ * 书架、笔记、生词本是本机学习记录，不动。
+ */
+suspend fun logoutAndWipeData(context: Context, memberAuth: MemberAuth, downloads: DownloadStore) {
+    withContext(Dispatchers.IO) {
+        try { memberAuth.logout() } catch (_: Exception) { }
+        try { AudioPlayer.stopPlayback() } catch (_: Exception) { }
+        try { VideoPlayer.stopPlayback() } catch (_: Exception) { }
+        try { if (TtsReader.isActive) TtsReader.stop() } catch (_: Exception) { }
+        try { downloads.clearAllDownloads() } catch (_: Exception) { }
+        try { context.deleteFile("catalog-cache.json") } catch (_: Exception) { }
+        try { File(context.cacheDir, "sheets").deleteRecursively() } catch (_: Exception) { }
+        try { File(context.cacheDir, "slides").deleteRecursively() } catch (_: Exception) { }
+        memberAuth.clearLocal()
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -160,20 +185,78 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ChengguangApp() {
     val context = LocalContext.current
-    // 先显示上次存下的远程目录（有的话），没有就用内置目录；再在后台拉远程目录，
-    // 拉到了就更新界面并存一份，下次没网也能用。拉不到就保持现在的显示，不会整个变空。
-    var items by remember { mutableStateOf(loadCachedCatalog(context) ?: loadCatalog(context)) }
-    LaunchedEffect(Unit) {
-        val remote = withContext(Dispatchers.IO) { fetchRemoteCatalog() }
-        if (remote != null && remote.isNotEmpty()) {
-            items = remote
-            saveRemoteCatalog(context, remote)
-        }
-    }
+    val memberAuth = remember { MemberAuth(context) }
     val downloads = remember { DownloadStore(context) }
     val bookshelf = remember { BookshelfStore(context) }
     val vocab = remember { VocabStore(context) }
     val stack = remember { mutableStateListOf<Route>(Route.Home) }
+    val scope = rememberCoroutineScope()
+
+    // 登录状态：打开先校验一次（有 token 才校验，没 token 直接进登录页）。
+    // 没登录时不显示任何内容——包括手机里缓存的目录（里面有书的全文），
+    // 免得没登录也能看。
+    var loginState by remember { mutableStateOf(LoginState.Checking) }
+    var items by remember { mutableStateOf(emptyList<CatalogItem>()) }
+
+    // 退出登录 / 账号失效：停掉播放、清掉下载和缓存、清掉凭证，回到登录页
+    fun logoutAndWipe() {
+        scope.launch {
+            logoutAndWipeData(context, memberAuth, downloads)
+            items = emptyList()
+            stack.clear()
+            stack.add(Route.Home)
+            loginState = LoginState.LoggedOut
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        loginState = if (!memberAuth.isLoggedIn) {
+            LoginState.LoggedOut
+        } else if (withContext(Dispatchers.IO) { memberAuth.validate() }) {
+            LoginState.LoggedIn
+        } else {
+            // 401：账号被停用或 token 失效——下载也一起清掉，不只回到登录页
+            withContext(Dispatchers.IO) { logoutAndWipeData(context, memberAuth, downloads) }
+            LoginState.LoggedOut
+        }
+    }
+
+    // 登录后才拉目录：先显示上次存下的远程目录（有的话），没有就用内置目录；
+    // 再在后台拉远程目录，拉到了就更新界面并存一份，下次没网也能用。
+    // 拉不到（没网）就保持现在的显示，不会整个变空；401 说明账号失效了，
+    // 回到登录页并清掉下载。
+    LaunchedEffect(loginState) {
+        if (loginState != LoginState.LoggedIn) return@LaunchedEffect
+        items = loadCachedCatalog(context) ?: loadCatalog(context)
+        when (val remote = withContext(Dispatchers.IO) { fetchRemoteCatalog(memberAuth.token) }) {
+            is CatalogResult.Ok -> {
+                if (remote.items.isNotEmpty()) {
+                    items = remote.items
+                    saveRemoteCatalog(context, remote.items)
+                }
+            }
+            is CatalogResult.Unauthorized -> logoutAndWipe()
+            is CatalogResult.Failed -> { /* 保持缓存/内置目录 */ }
+        }
+    }
+
+    if (loginState == LoginState.Checking) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(Paper),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("正在确认登录…", fontSize = 14.sp, color = Color.Gray)
+            }
+        }
+        return
+    }
+    if (loginState == LoginState.LoggedOut) {
+        LoginScreen(memberAuth) { loginState = LoginState.LoggedIn }
+        return
+    }
     val current = stack.last()
     // 视频全屏状态：视频页里切换，上面统一藏标题栏（全屏时标题栏没地方放）。
     var videoFullscreen by remember { mutableStateOf(false) }
@@ -274,7 +357,9 @@ fun ChengguangApp() {
                     onItem = { go(Route.Detail(it.id)) },
                     onBookshelf = { go(Route.Bookshelf) },
                     vocab = vocab,
-                    onVocab = { go(Route.Vocab) }
+                    onVocab = { go(Route.Vocab) },
+                    memberAuth = memberAuth,
+                    onLogout = { logoutAndWipe() }
                 )
                 is Route.Category -> CategoryScreen(r.name, items, downloads, onItem = { go(Route.Detail(it.id)) })
                 is Route.Detail -> {
@@ -500,7 +585,9 @@ fun MineScreen(
     onItem: (CatalogItem) -> Unit,
     onBookshelf: () -> Unit = {},
     vocab: VocabStore? = null,
-    onVocab: () -> Unit = {}
+    onVocab: () -> Unit = {},
+    memberAuth: MemberAuth? = null,
+    onLogout: () -> Unit = {}
 ) {
     val downloaded = downloads.downloadedItems(items)
     val shelfCount = bookshelf.shelfItems(items).size
@@ -511,6 +598,7 @@ fun MineScreen(
     var feedbackContact by remember { mutableStateOf("") }
     var feedbackStatus by remember { mutableStateOf("") }
     var feedbackSending by remember { mutableStateOf(false) }
+    var confirmLogout by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -691,6 +779,26 @@ fun MineScreen(
                     Text("存储说明", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("视频和音频存放在 Cloudflare R2 对象存储，App 打开时从管理后台拉最新目录；拉不到时用 App 内置的目录，不会白屏。下载的文件存在 App 专属目录，随 App 卸载一起删除。", fontSize = 14.sp)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("当前账号", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("已登录：${memberAuth?.username ?: ""}", fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("退出登录会清除这台手机上的下载、目录缓存和讲章缓存。书架、笔记、生词本是本机学习记录，不受影响。", fontSize = 13.sp, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (confirmLogout) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onLogout() }) { Text("确认退出") }
+                            OutlinedButton(onClick = { confirmLogout = false }) { Text("取消") }
+                        }
+                    } else {
+                        OutlinedButton(onClick = { confirmLogout = true }) { Text("退出登录") }
+                    }
                 }
             }
         }
