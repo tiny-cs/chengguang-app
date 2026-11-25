@@ -57,6 +57,43 @@ class DownloadStore(context: Context) {
             refresh()
         }
 
+    /** WiFi 自动下载新内容（默认开）：目录刷新后，新讲道连上 WiFi 自动下好，打开就能听。成员可以在“我的”里关掉它。 */
+    var autoDownload: Boolean
+        get() = prefs.getBoolean("auto_download", true)
+        set(value) {
+            prefs.edit().putBoolean("auto_download", value).apply()
+            refresh()
+        }
+
+    /** 用户手动删掉 / 取消过的条目：不再自动下载（手动点“下载到手机”仍可下载）。 */
+    private fun skippedIds(): Set<String> =
+        prefs.getStringSet("auto_dl_skipped", emptySet())?.toSet() ?: emptySet()
+
+    private fun markSkipped(item: CatalogItem) {
+        val s = skippedIds().toMutableSet()
+        s.add(item.id)
+        prefs.edit().putStringSet("auto_dl_skipped", s).apply()
+    }
+
+    fun isAutoSkipped(item: CatalogItem): Boolean = skippedIds().contains(item.id)
+
+    /**
+     * WiFi 自动下载：目录刷新后，把还没下过、没在下、用户没删过的新音频/视频下好。
+     * 只在 WiFi 下跑（不管“仅 WiFi 下载”开关），不走流量；书籍正文已在目录里，不用下载。
+     */
+    fun autoDownloadNew(items: List<CatalogItem>, token: String?) {
+        if (!autoDownload) return
+        if (!isWifiConnected()) return
+        for (item in items) {
+            if (item.type != "audio" && item.type != "video") continue
+            if (item.url.isEmpty()) continue
+            if (isAutoSkipped(item)) continue
+            val st = state(item).status
+            if (st == DownloadStatus.DOWNLOADED || st == DownloadStatus.DOWNLOADING || st == DownloadStatus.PAUSED) continue
+            start(item, token)
+        }
+    }
+
     fun isWifiConnected(): Boolean {
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = cm.activeNetwork ?: return false
@@ -174,6 +211,9 @@ class DownloadStore(context: Context) {
     }
 
     fun start(item: CatalogItem, token: String? = null): StartResult {
+        // 手动点下载 = 明确想要这条：把它从“不再自动下”的名单里拿掉
+        val s = skippedIds().toMutableSet()
+        if (s.remove(item.id)) prefs.edit().putStringSet("auto_dl_skipped", s).apply()
         if (item.url.isEmpty()) return StartResult.Failed("这条内容没有可下载的文件")
         if (isDownloaded(item)) return StartResult.Started
         if (wifiOnly && !isWifiConnected()) return StartResult.NeedWifi
@@ -210,6 +250,8 @@ class DownloadStore(context: Context) {
 
     /** 取消正在进行的下载（删掉系统任务和未下完的文件）。 */
     fun cancel(item: CatalogItem) {
+        // 手动取消 = 不想要这条：以后也不再自动下载它
+        markSkipped(item)
         val wasDownloaded = isDownloaded(item)
         downloadId(item)?.let { dm.remove(it) }
         clearDownloadId(item)
@@ -220,6 +262,8 @@ class DownloadStore(context: Context) {
 
     /** 删除已下载的文件，释放空间。 */
     fun delete(item: CatalogItem) {
+        // 手动删掉 = 不想要这条：以后也不再自动下载它
+        markSkipped(item)
         downloadId(item)?.let { dm.remove(it) }
         clearDownloadId(item)
         localFile(item).delete()

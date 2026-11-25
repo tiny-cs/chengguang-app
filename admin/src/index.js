@@ -342,6 +342,11 @@ export default {
       if (!u || u.disabled) return err("账号或密码不对", 401);
       const hash = await sha256Hex(u.salt + ":" + password);
       if (hash !== u.hash) return err("账号或密码不对", 401);
+      // 记最后登录时间：后台成员列表里能看到谁最近在用（写失败也不影响登录）
+      try {
+        members.users[username].lastLoginAt = new Date().toISOString();
+        await writeMembers(env, members);
+      } catch (e) { /* ignore */ }
       const token = randomHex(32);
       const sessions = await readSessions(env);
       const now = Date.now();
@@ -369,6 +374,14 @@ export default {
     if (path === "/api/member/me" && request.method === "GET") {
       const username = await validMember(request, env);
       if (!username) return err("请先登录", 401);
+      // 打开 App 校验时也更新一次：后台看到的就是谁最近在用（写失败不影响校验结果）
+      try {
+        const members = await readMembers(env);
+        if (members.users[username]) {
+          members.users[username].lastLoginAt = new Date().toISOString();
+          await writeMembers(env, members);
+        }
+      } catch (e) { /* ignore */ }
       return json({ ok: true, username }, 200, { "Access-Control-Allow-Origin": "*" });
     }
 
@@ -553,7 +566,7 @@ export default {
     if (path === "/api/members" && request.method === "GET") {
       const members = await readMembers(env);
       const list = Object.keys(members.users).sort().map((name) => ({
-        username: name, disabled: !!members.users[name].disabled, createdAt: members.users[name].createdAt || "",
+        username: name, disabled: !!members.users[name].disabled, createdAt: members.users[name].createdAt || "", lastLoginAt: members.users[name].lastLoginAt || "",
       }));
       return json({ ok: true, items: list });
     }
@@ -1033,6 +1046,13 @@ async function delFeedback(id) {
   if (!d.ok) { alert(d.error || "删除失败"); return; }
   loadFeedback();
 }
+// 最后登录时间：服务器存的是 UTC 的 ISO 时间，浏览器按本地时间显示（年月日 时:分）
+function fmtMemberTime(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  var p = function (n) { return (n < 10 ? "0" : "") + n; };
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
 // 成员账号：建账号、停用/启用、删除、列表（都要管理员登录）
 async function loadMembers() {
   var box = document.getElementById("memberList");
@@ -1045,8 +1065,9 @@ async function loadMembers() {
   var html = "";
   for (var i = 0; i < list.length; i++) {
     var m = list[i];
+    var last = m.lastLoginAt ? fmtMemberTime(m.lastLoginAt) : "从未登录";
     html += "<div class='fb'><div><b>" + esc(m.username) + "</b> " + (m.disabled ? "<span style='color:#8e4a2f'>已停用</span>" : "<span class='muted'>正常</span>") + "</div>"
-      + "<div class='meta'>" + esc((m.createdAt || "").slice(0, 10))
+      + "<div class='meta'>建于 " + esc((m.createdAt || "").slice(0, 10)) + " · 最后登录 " + esc(last)
       + " <button data-u='" + esc(m.username) + "' onclick='setMemberDisabled(this.dataset.u," + (m.disabled ? "false" : "true") + ")'>" + (m.disabled ? "启用" : "停用") + "</button>"
       + " <button class='danger' data-u='" + esc(m.username) + "' onclick='delMember(this.dataset.u)'>删除</button></div></div>";
   }

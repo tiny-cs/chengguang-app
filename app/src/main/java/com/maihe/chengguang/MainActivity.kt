@@ -228,11 +228,13 @@ fun ChengguangApp() {
     LaunchedEffect(loginState) {
         if (loginState != LoginState.LoggedIn) return@LaunchedEffect
         items = loadCachedCatalog(context) ?: loadCatalog(context)
+        downloads.autoDownloadNew(items, memberAuth.token)
         when (val remote = withContext(Dispatchers.IO) { fetchRemoteCatalog(memberAuth.token) }) {
             is CatalogResult.Ok -> {
                 if (remote.items.isNotEmpty()) {
                     items = remote.items
                     saveRemoteCatalog(context, remote.items)
+                    downloads.autoDownloadNew(remote.items, memberAuth.token)
                 }
             }
             is CatalogResult.Unauthorized -> logoutAndWipe()
@@ -706,6 +708,25 @@ fun MineScreen(
                     Switch(
                         checked = downloads.wifiOnly,
                         onCheckedChange = { downloads.wifiOnly = it }
+                    )
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("WiFi 自动下载新内容", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("打开后，新讲道连上 WiFi 自动下好，打开就能听；手动删掉的不再自动下", fontSize = 13.sp, color = Color.Gray)
+                    }
+                    Switch(
+                        checked = downloads.autoDownload,
+                        onCheckedChange = { downloads.autoDownload = it }
                     )
                 }
             }

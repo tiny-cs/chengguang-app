@@ -27,8 +27,8 @@ android {
         applicationId = "com.maihe.chengguang"
         minSdk = 26
         targetSdk = 34
-        versionCode = 37
-        versionName = "1.15.0"
+        versionCode = 38
+        versionName = "1.15.1"
         // 注意：AGP 8.x 的 Kotlin DSL 里 buildConfigField 只能写在 defaultConfig /
         // buildTypes / productFlavors 里，直接写在 android {} 下会报
         // "Unresolved reference: buildConfigField"（脚本编译错误）。
